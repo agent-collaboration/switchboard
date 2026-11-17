@@ -219,7 +219,11 @@ it('bounds buffered spans by contiguous runs for large repeated short header val
 	try {
 		actual = redactExactCredentialText(input, { exactValues: ['2', '22', '2222'] });
 		// Observe the actual collection entering the cross-value merge, without a public test API.
-		bufferedSpanCounts = sorting.mock.contexts.map((spans) => spans.length);
+		bufferedSpanCounts = sorting.mock.contexts.map((spanCollection) => {
+			if (!Array.isArray(spanCollection))
+				throw new Error('Expected a span collection to be sorted.');
+			return spanCollection.length;
+		});
 	} finally {
 		sorting.mockRestore();
 	}
