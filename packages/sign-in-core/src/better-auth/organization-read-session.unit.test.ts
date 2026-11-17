@@ -4,6 +4,7 @@ import { expect, it, vi } from 'vitest';
 
 import {
 	acquireReadSession,
+	readNativeOrganizationSessionView,
 	readStoredOrganizationSession,
 } from '#sign-in-core/better-auth/organization-read-session';
 import { liveOwnerSessionSchema } from '#sign-in-core/storage/models/person-session-records';
@@ -67,4 +68,16 @@ it('acquires a signed-out result through native getSession in a real endpoint co
 		returnHeaders: true,
 		returnStatus: false,
 	});
+});
+
+it('parses the tokenless native view and refuses malformed or unverified input', () => {
+	const { token: _token, ...tokenlessSession } = session.session;
+	const view = { ...session, session: tokenlessSession };
+	expect(readNativeOrganizationSessionView(view)).toEqual({ kind: 'session', value: view });
+	expect(readStoredOrganizationSession(view)).toEqual({ kind: 'unavailable' });
+	expect(readNativeOrganizationSessionView(null)).toEqual({ kind: 'signed-out' });
+	expect(readNativeOrganizationSessionView({ session: {} })).toEqual({ kind: 'unavailable' });
+	expect(
+		readNativeOrganizationSessionView({ ...view, user: { ...view.user, emailVerified: false } }),
+	).toEqual({ kind: 'signed-out' });
 });

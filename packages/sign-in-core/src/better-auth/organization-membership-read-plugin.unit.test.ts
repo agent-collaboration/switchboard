@@ -1,5 +1,5 @@
 import { betterAuth } from 'better-auth';
-import { createAuthMiddleware, getSession } from 'better-auth/api';
+import { createAuthMiddleware, getSession, getSessionFromCtx } from 'better-auth/api';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { createOrganizationMembershipReadPlugin } from '#sign-in-core/better-auth/organization-membership-read-plugin';
@@ -12,7 +12,11 @@ import {
 
 vi.mock('better-auth/api', async (importOriginal) => {
 	const original = await importOriginal<typeof import('better-auth/api')>();
-	return { ...original, getSession: vi.fn(original.getSession) };
+	return {
+		...original,
+		getSession: vi.fn(original.getSession),
+		getSessionFromCtx: vi.fn(original.getSessionFromCtx),
+	};
 });
 vi.mock('#sign-in-core/better-auth/organization-permission-check', async (importOriginal) => {
 	const original =
@@ -224,6 +228,7 @@ it('uses a null hook session without reading stored session or facts', async () 
 	expect(await response.json()).toEqual({ kind: 'refused' });
 	expect(readPersonSession).not.toHaveBeenCalled();
 	expect(getSession).not.toHaveBeenCalled();
+	expect(getSessionFromCtx).not.toHaveBeenCalled();
 	expect(test.facts).not.toHaveBeenCalled();
 });
 

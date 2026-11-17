@@ -1,7 +1,11 @@
 import type { GenericEndpointContext } from '@better-auth/core';
 import { APIError, getSession } from 'better-auth/api';
 
-import type { ReadSession } from '#sign-in-core/organizations/person-organization-context';
+import {
+	nativeLiveSessionViewSchema,
+	type OrganizationSessionView,
+	type ReadSession,
+} from '#sign-in-core/organizations/person-organization-context';
 import {
 	liveOwnerSessionSchema,
 	type LiveOwnerSession,
@@ -11,6 +15,16 @@ import {
 export function readStoredOrganizationSession(value: unknown): ReadSession {
 	if (value === null) return { kind: 'signed-out' };
 	const parsed = liveOwnerSessionSchema.safeParse(value);
+	if (!parsed.success) return { kind: 'unavailable' };
+	return parsed.data.user.emailVerified
+		? { kind: 'session', value: parsed.data }
+		: { kind: 'signed-out' };
+}
+
+/** Parses the tokenless server API view without weakening stored-session validation. */
+export function readNativeOrganizationSessionView(value: unknown): OrganizationSessionView {
+	if (value === null) return { kind: 'signed-out' };
+	const parsed = nativeLiveSessionViewSchema.safeParse(value);
 	if (!parsed.success) return { kind: 'unavailable' };
 	return parsed.data.user.emailVerified
 		? { kind: 'session', value: parsed.data }

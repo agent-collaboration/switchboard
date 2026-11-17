@@ -1,12 +1,16 @@
 import { betterAuth } from 'better-auth';
 import { createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
+import { organization } from 'better-auth/plugins/organization';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import {
 	organizationReadSessionBeforeHook,
+	readNativeOrganizationSessionView,
 	organizationReadResponseHeaders,
 	readStoredOrganizationSession,
 } from '#sign-in-core/better-auth/organization-read-session';
+import { sessionReadWithoutToken } from '#sign-in-core/better-auth/session-read-without-token';
+import { readPersonOrganizationContext } from '#sign-in-core/organizations/person-organization-context';
 import { liveOwnerSessionSchema } from '#sign-in-core/storage/models/person-session-records';
 
 const issuer = 'https://sign-in.example.invalid';
@@ -130,4 +134,93 @@ it('clears an expired native session and cookie before the fixture endpoint sees
 		responseHasClearCookie: true,
 		body: { kind: 'signed-out' },
 	});
+});
+
+it('parses the live native server getSession output after the production token-stripping hook', async () => {
+	vi.useFakeTimers({ toFake: ['Date'] });
+	vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+	const fixtureCookie = createAuthEndpoint(
+		'/unit-live-session-cookie',
+		{ method: 'POST' },
+		async (context) => {
+			const user = await context.context.internalAdapter.createUser(
+				{
+					name: 'Synthetic',
+					email: 'synthetic-live@example.com',
+					emailVerified: true,
+					image: null,
+				},
+				{ method: 'email-password' },
+			);
+			const session = await context.context.internalAdapter.createSession(user.id, false, {
+				activeOrganizationId: null,
+			});
+			await context.setSignedCookie(
+				context.context.authCookies.sessionToken.name,
+				session.token,
+				context.context.secret,
+				context.context.authCookies.sessionToken.attributes,
+			);
+			return context.json({ created: true });
+		},
+	);
+	let nextId = 0;
+	const ids = ['11111111-1111-7111-8111-111111111111', '22222222-2222-7222-8222-222222222222'];
+	const auth = betterAuth({
+		baseURL: issuer,
+		secret: 'test-only-native-live-secret-'.repeat(3),
+		advanced: {
+			database: {
+				generateId: () => {
+					const id = ids[nextId++];
+					if (id === undefined) throw new Error('Unexpected ID request');
+					return id;
+				},
+			},
+		},
+		session: {
+			cookieCache: { enabled: false },
+			additionalFields: {
+				secondFactorAt: { type: 'number', required: false, input: false },
+				secondFactorMethod: { type: 'string', required: false, input: false },
+			},
+		},
+		hooks: {
+			after: createAuthMiddleware(async (context) => {
+				if (context.path === '/get-session') {
+					const read = sessionReadWithoutToken(context.context.returned);
+					if (read.kind === 'stripped') return context.json(read.body);
+				}
+				return undefined;
+			}),
+		},
+		plugins: [
+			organization({ teams: { enabled: false }, dynamicAccessControl: { enabled: false } }),
+			{ id: 'unit-live-session', endpoints: { fixtureCookie } },
+		],
+	});
+	const seeded = await auth.handler(
+		new Request(`${issuer}/api/auth/unit-live-session-cookie`, {
+			method: 'POST',
+			headers: { origin: issuer },
+		}),
+	);
+	expect(seeded.status).toBe(200);
+	const cookie = seeded.headers.getSetCookie()[0]?.split(';')[0];
+	if (cookie === undefined) throw new Error('Fixture cookie missing');
+	const current = await auth.api.getSession({
+		headers: new Headers({ cookie }),
+		query: { disableCookieCache: true, disableRefresh: true },
+	});
+	const read = readNativeOrganizationSessionView(current);
+	expect(current).not.toBeNull();
+	expect(current === null ? false : Object.hasOwn(current.session, 'token')).toBe(false);
+	expect(readStoredOrganizationSession(current)).toEqual({ kind: 'unavailable' });
+	expect(read.kind).toBe('session');
+	await expect(
+		readPersonOrganizationContext({
+			session: read,
+			store: { membershipsForPerson: async () => ({ kind: 'available', value: [] }) },
+		}),
+	).resolves.toEqual({ kind: 'available', choices: [], activeOrganizationId: null });
 });

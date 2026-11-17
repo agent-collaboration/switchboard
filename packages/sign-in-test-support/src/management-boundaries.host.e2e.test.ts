@@ -1,4 +1,5 @@
 import * as signInTables from '@agent-collaboration/sign-in-core';
+import { eq } from 'drizzle-orm';
 import { decodeJwt, decodeProtectedHeader, jwtVerify } from 'jose';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -6,6 +7,7 @@ import { z } from 'zod';
 import { useControlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-node-test-clock';
 import { controlledSignInIds } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import { expectNoIssuedCredentials } from '#sign-in-test-support/test-fixtures/credential-free-refusal';
+import { readCurrentBrowserSession } from '#sign-in-test-support/test-fixtures/current-browser-session';
 import { createObservedProofJwks } from '#sign-in-test-support/test-fixtures/jwks-fetch-observation';
 import {
 	agentAudience,
@@ -302,6 +304,52 @@ it('agent: every management boundary refuses real E10 and signed management no-s
 				!publicProviderReads.has(`${route.method} ${route.path}`),
 		);
 	const cookieSnapshot = harness.cookie();
+	const cookieOwner = await readCurrentBrowserSession({
+		cookie: cookieSnapshot,
+		database: harness.database,
+	});
+	expect({ personId: cookieOwner.personId, sessionId: cookieOwner.id }).toEqual({
+		personId: person.sub,
+		sessionId: person.sid,
+	});
+	const organizationReadMethods = new Map([
+		['/api/auth/organization/self-context', 'GET'],
+		['/api/auth/organization/person-membership', 'POST'],
+		['/api/auth/organization/people-list', 'GET'],
+		['/api/auth/organization/people', 'GET'],
+	]);
+	for (const [path, method] of organizationReadMethods)
+		expect(routes.filter((route) => route.path === path && route.method === method)).toHaveLength(
+			1,
+		);
+	// Compare the cookie holder's own stored projection, never a bearer subject or configured org.
+	const choices = z.array(signInTables.organizationChoiceSchema).parse(
+		await harness.database
+			.select({
+				organizationId: signInTables.member.organizationId,
+				organizationName: signInTables.organization.name,
+				role: signInTables.member.role,
+			})
+			.from(signInTables.member)
+			.innerJoin(
+				signInTables.organization,
+				eq(signInTables.member.organizationId, signInTables.organization.id),
+			)
+			.where(eq(signInTables.member.userId, person.sub))
+			.orderBy(signInTables.member.organizationId),
+	);
+	const [cookieSession] = await harness.database
+		.select({ activeOrganizationId: signInTables.session.activeOrganizationId })
+		.from(signInTables.session)
+		.where(eq(signInTables.session.id, person.sid));
+	if (cookieSession === undefined)
+		throw new Error('Owner cookie session missing from matrix setup');
+	const activeOrganizationId =
+		choices.find((choice) => choice.organizationId === cookieSession.activeOrganizationId)
+			?.organizationId ?? null;
+	if (activeOrganizationId === null)
+		throw new Error('Owner cookie has no current organization for valid read probes');
+	const expectedSelfContext = { kind: 'available', choices, activeOrganizationId };
 	const centralArrivalsBeforeAttacks = [...harness.centralProvisioning.arrivals];
 	const pathlessUrls = await Promise.all(
 		['GET', 'POST'].map((method) =>
@@ -337,7 +385,46 @@ it('agent: every management boundary refuses real E10 and signed management no-s
 					// the entire inventory. Their bearer/cookie payloads are unchanged;
 					// none rotates an address or disables a limit between probes.
 					const browserKey = `management-${token === agent ? 'E10' : 'no-sid'}-${withCookie ? 'cookie' : 'no-cookie'}`;
-					const response = await harness.authAsBrowser(browserKey, route.path, {
+					// Only these exact method/path pairs are public; all other inventory rows keep 404.
+					const organizationRead = organizationReadMethods.get(route.path) === route.method;
+					let requestPath = route.path;
+					let requestBody: Readonly<Record<string, unknown>> = {
+						client_id: registeredClientId,
+						actor: person.sub,
+						owner: true,
+						organizationId: organizationOne,
+					};
+					let expectedStatus = 404;
+					let expectedBody: unknown = { error: 'not-found' };
+					if (organizationRead) {
+						switch (route.path) {
+							case '/api/auth/organization/self-context':
+								expectedStatus = withCookie ? 200 : 401;
+								expectedBody = withCookie ? expectedSelfContext : { kind: 'signed-out' };
+								break;
+							case '/api/auth/organization/person-membership':
+								requestBody = {
+									organizationId: activeOrganizationId,
+									email: 'owner@example.invalid',
+								};
+								expectedStatus = 401;
+								expectedBody = { kind: 'refused' };
+								break;
+							case '/api/auth/organization/people-list':
+								requestPath = `${route.path}?organizationId=${activeOrganizationId}&offset=0`;
+								expectedStatus = 401;
+								expectedBody = { kind: 'refused' };
+								break;
+							case '/api/auth/organization/people':
+								requestPath = `${route.path}?organizationId=${activeOrganizationId}`;
+								expectedStatus = 303;
+								expectedBody = '';
+								break;
+							default:
+								throw new Error('Unclassified public organization read');
+						}
+					}
+					const response = await harness.authAsBrowser(browserKey, requestPath, {
 						method: route.method,
 						headers: {
 							authorization: `Bearer ${token}`,
@@ -349,29 +436,41 @@ it('agent: every management boundary refuses real E10 and signed management no-s
 						...(['GET', 'HEAD'].includes(route.method)
 							? {}
 							: {
-									body: JSON.stringify({
-										client_id: registeredClientId,
-										actor: person.sub,
-										owner: true,
-										organizationId: organizationOne,
-									}),
+									body: JSON.stringify(requestBody),
 								}),
 					});
-					const body: unknown = route.method === 'HEAD' ? null : await response.json();
+					const pageRedirect = organizationRead && route.path === '/api/auth/organization/people';
+					const body: unknown =
+						route.method === 'HEAD'
+							? null
+							: pageRedirect
+								? await response.text()
+								: await response.json();
+					expectNoIssuedCredentials(body);
+					if (organizationRead) {
+						expect(body).toEqual(expectedBody);
+						expect(response.headers.get('cache-control')).toBe('no-store');
+						if (pageRedirect) expect(response.headers.get('location')).toBe('/sign-in');
+					}
 					return {
 						...route,
 						withCookie,
 						identity: token === agent ? 'E10' : 'no-sid',
 						status: response.status,
+						expectedStatus,
 						exactRefusal:
 							route.method === 'HEAD' ||
-							z.strictObject({ error: z.literal('not-found') }).safeParse(body).success,
+							(organizationRead
+								? response.status === expectedStatus
+								: z.strictObject({ error: z.literal('not-found') }).safeParse(body).success),
 					};
 				}),
 			),
 		),
 	);
-	expect(observations.filter((observation) => observation.status !== 404)).toEqual([]);
+	expect(
+		observations.filter((observation) => observation.status !== observation.expectedStatus),
+	).toEqual([]);
 	expect(observations.filter((observation) => !observation.exactRefusal)).toEqual([]);
 	await Promise.all(
 		[agent, withoutSid].flatMap((token) =>

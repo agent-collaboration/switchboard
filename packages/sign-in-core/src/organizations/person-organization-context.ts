@@ -5,7 +5,10 @@ import {
 	type OrganizationChoice,
 	type PersonOrganizationContext,
 } from '#sign-in-core/contracts/organization-membership';
-import { liveOwnerSessionSchema } from '#sign-in-core/storage/models/person-session-records';
+import {
+	liveOwnerSessionSchema,
+	storedSessionSchema,
+} from '#sign-in-core/storage/models/person-session-records';
 import type { OrganizationId } from '#sign-in-core/storage/models/sign-in-store';
 import type { OrganizationMembershipRecords } from '#sign-in-core/storage/organization-membership-store';
 
@@ -16,6 +19,15 @@ export const organizationReadSessionSchema = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('session'), value: liveOwnerSessionSchema }),
 ]);
 export type ReadSession = z.infer<typeof organizationReadSessionSchema>;
+export const nativeLiveSessionViewSchema = liveOwnerSessionSchema.extend({
+	session: storedSessionSchema.omit({ token: true }),
+});
+export const organizationSessionViewSchema = z.discriminatedUnion('kind', [
+	organizationReadSessionSchema.options[0],
+	organizationReadSessionSchema.options[1],
+	organizationReadSessionSchema.options[2].extend({ value: nativeLiveSessionViewSchema }),
+]);
+export type OrganizationSessionView = z.infer<typeof organizationSessionViewSchema>;
 
 export function currentSelectionAmong(
 	choices: readonly OrganizationChoice[],
@@ -27,7 +39,7 @@ export function currentSelectionAmong(
 }
 
 export async function readPersonOrganizationContext(props: {
-	readonly session: ReadSession;
+	readonly session: OrganizationSessionView;
 	readonly store: Pick<OrganizationMembershipRecords, 'membershipsForPerson'>;
 }): Promise<PersonOrganizationContext> {
 	switch (props.session.kind) {

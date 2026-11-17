@@ -24,7 +24,7 @@ import {
 	createOrganizationFleetCallGuard,
 	createOrganizationFleetCallRunner,
 } from '#sign-in-core/better-auth/organization-fleet-call-guard';
-import { readStoredOrganizationSession } from '#sign-in-core/better-auth/organization-read-session';
+import { readNativeOrganizationSessionView } from '#sign-in-core/better-auth/organization-read-session';
 import { bootstrapOwnerClient } from '#sign-in-core/better-auth/owner-client-bootstrap';
 import {
 	createSignInProvider,
@@ -232,7 +232,7 @@ export function createSignInHttpHandler(
 						query: { disableCookieCache: true, disableRefresh: true },
 					});
 					const organizationContext = await readPersonOrganizationContext({
-						session: readStoredOrganizationSession(current),
+						session: readNativeOrganizationSessionView(current),
 						store: configuration.store.organizations,
 					});
 					if (organizationContext.kind === 'unavailable')
