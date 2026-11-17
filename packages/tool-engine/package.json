@@ -53,6 +53,7 @@
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {
+		"@hegeldev/hegel": "0.4.10",
 		"@agent-vm/config-contracts": "npm:@agent-vm/config-contracts@0.0.153",
 		"@agent-vm/gateway-control-contracts": "npm:@agent-vm/gateway-control-contracts@0.0.153",
 		"@modelcontextprotocol/sdk": "1.29.0",

@@ -44,6 +44,7 @@
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {
+		"@hegeldev/hegel": "0.4.10",
 		"@agent-collaboration/tool-host-node": "workspace:*",
 		"@modelcontextprotocol/sdk": "1.29.0",
 		"esbuild": "0.27.7",
