@@ -70,6 +70,20 @@ it('does not retain complete ordinary diagnostic lines until EOF', () => {
 	expect(redactor.end()).toBe('');
 });
 
+it('preserves word-boundary context across writes for embedded prefixes and valid credentials', () => {
+	for (const prefix of ['x', '_', '7', ' ', '雪']) {
+		for (const suffix of ['Bearer secret', 'Basic c2VjcmV0', 'token=secret']) {
+			const redactor = createCredentialTextRedactor();
+			const output = redactor.write(prefix) + redactor.write(suffix) + redactor.end();
+			const expected = ['x', '_', '7'].includes(prefix)
+				? `${prefix}${suffix}`
+				: `${prefix}[REDACTED]`;
+			expect(output).toBe(expected);
+			expect(output).toBe(redactCredentialText(prefix + suffix));
+		}
+	}
+});
+
 it('fails closed when an unresolved authorization prefix exceeds its named cap', () => {
 	for (const ending of ['synthetic-token after', '! after']) {
 		const redactor = createCredentialTextRedactor({ exactValues: ['synthetic-token'] });
