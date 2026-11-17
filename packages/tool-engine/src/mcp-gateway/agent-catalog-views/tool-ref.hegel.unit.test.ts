@@ -19,6 +19,6 @@ it('round trips nonempty Unicode identities and distinguishes changed components
 			expect(encodeToolRef({ ...identity, toolName: `${identity.toolName}x` })).not.toBe(ref);
 			expect(() => decodeToolRef(`${ref}=`)).toThrow();
 		},
-		{ testCases: 500, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

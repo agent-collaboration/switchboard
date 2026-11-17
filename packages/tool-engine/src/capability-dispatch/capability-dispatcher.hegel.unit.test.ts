@@ -199,7 +199,7 @@ it('requires both offered and current receipts to match every invocation binding
 			expect((await subject.dispatcher.dispatch(input)).kind).toBe('completed');
 			expect(subject.invocations).toHaveLength(1);
 		},
-		{ testCases: 500, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });
 

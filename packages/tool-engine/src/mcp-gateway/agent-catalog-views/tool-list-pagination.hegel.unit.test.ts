@@ -58,6 +58,6 @@ it('reconstructs generated multipage lists within the independently serialized U
 			expect(() => paginateMcpTools(tools, `0${count}`)).toThrow();
 			expect(() => paginateMcpTools(tools, String(count + 1))).toThrow();
 		},
-		{ testCases: 500, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

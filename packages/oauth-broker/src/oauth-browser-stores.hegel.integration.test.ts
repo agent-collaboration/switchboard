@@ -20,7 +20,12 @@ import {
 } from './oauth-login-continuation-store.js';
 
 const browserLifetimeMs = 10 * 60_000;
-const propertySettings = { testCases: 100, derandomize: true, database: hegel.Database.disabled };
+const propertySettings = {
+	testCases: 100,
+	seed: 20261117,
+	derandomize: true,
+	database: hegel.Database.disabled,
+};
 const principals: readonly OAuthBrowserSessionIdentity[] = [
 	{ issuer: 'https://identity.example.test', subject: 'synthetic-owner' },
 	{ issuer: 'https://identity.example.test', subject: 'other-synthetic-owner' },

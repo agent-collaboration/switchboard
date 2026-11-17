@@ -15,6 +15,6 @@ it('M4 models admission, pending and completed unlink/disable, idempotency and i
 			});
 			await runAgentRemovalModel(tc, authority);
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

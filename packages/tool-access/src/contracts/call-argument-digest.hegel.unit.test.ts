@@ -23,6 +23,6 @@ it('canonicalizes JSON object order and omissions while binding values and array
 				digest,
 			);
 		},
-		{ testCases: 500, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

@@ -133,6 +133,6 @@ it('models allowed operation transitions and revision conflicts', async () => {
 				await store.close();
 			}
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

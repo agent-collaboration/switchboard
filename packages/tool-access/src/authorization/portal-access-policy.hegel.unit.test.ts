@@ -16,7 +16,12 @@ import {
 } from '#tool-access/authorization/portal-access-policy';
 import { resolvedMcpPortalProfileSchema } from '#tool-access/contracts/mcp-approval-profile';
 
-const settings = { testCases: 500, derandomize: true, database: hegel.Database.disabled };
+const settings = {
+	testCases: 500,
+	seed: 20261117,
+	derandomize: true,
+	database: hegel.Database.disabled,
+};
 const identity = createPortalAgentIdentity({
 	agentId: 'agent',
 	agentScopeId: 'scope',

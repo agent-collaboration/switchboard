@@ -119,7 +119,7 @@ it('models replay, expiry pruning and each capacity across generated sequences',
 		async (tc) => {
 			await hegel.stateful.runAsync(tc, replayMachine, createScenario(), { stepCount: 50 });
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });
 
@@ -189,6 +189,6 @@ it('refuses a signed approval at exact expiry after pruning without a second eff
 				await authority.consumeApprovalToken('018f0000-0000-7000-8000-000000000001', expiry),
 			).toEqual({ ok: true });
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

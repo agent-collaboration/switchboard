@@ -7,6 +7,7 @@ import { normalizeGogFileArgument } from './gog-file-paths.js';
 
 const propertySettings = {
 	testCases: 500,
+	seed: 20261117,
 	derandomize: true,
 	database: hegel.Database.disabled,
 };

@@ -15,12 +15,17 @@ import {
 	nodeHostHttpRequestIsAllowed,
 } from '#node-host/mcp-proxy-server/http-request-policy';
 
-const settings = { testCases: 500, derandomize: true, database: hegel.Database.disabled };
+const settings = {
+	testCases: 500,
+	seed: 20261117,
+	derandomize: true,
+	database: hegel.Database.disabled,
+};
 
 function requestWithHeaders(props: {
 	readonly host?: string;
 	readonly origin?: string;
-	readonly target?: string;
+	readonly target?: string | undefined;
 }): IncomingMessage {
 	const request = new IncomingMessage(new Socket());
 	request.url = props.target;

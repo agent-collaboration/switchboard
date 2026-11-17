@@ -20,6 +20,6 @@ it('M5 decoder rejects bodies above the independently measured UTF-8 limit', () 
 				new GatewayRuntimeFrameDecoder({ maxContentBytes: bodyLength - 1 }).push(frame),
 			).toThrow(expect.objectContaining({ code: 'CONTENT_TOO_LARGE' }));
 		},
-		{ testCases: 500, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

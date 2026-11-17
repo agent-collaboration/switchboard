@@ -323,6 +323,6 @@ it('M2 transaction and completion principals, first use, cancellation, caps and 
 			// Act / Assert: the independent model checks every retained record after every step.
 			await hegel.stateful.runAsync(testCase, ceremonyMachine, state, { stepCount: 50 });
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

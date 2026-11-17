@@ -108,6 +108,6 @@ it('M4 keeps admission, unlink/disable, idempotency and conflicts through real D
 			tc.note(`isolated workspace ${workspaceId}`);
 			await runAgentRemovalModel(tc, durableAuthority(workspaceId));
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

@@ -10,7 +10,12 @@ import {
 	toRedactedJsonValue,
 } from '#upstream-mcp-connectors/upstream-response-middleware';
 
-const settings = { testCases: 500, derandomize: true, database: hegel.Database.disabled };
+const settings = {
+	testCases: 500,
+	seed: 20261117,
+	derandomize: true,
+	database: hegel.Database.disabled,
+};
 
 it('replaces exact configured values while preserving ordinary text', () => {
 	hegel.test((tc) => {

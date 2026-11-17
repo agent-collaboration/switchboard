@@ -218,6 +218,6 @@ it('M5 models request, abort, late reply and close over a Unix socket', async ()
 				await rmdir(root);
 			}
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

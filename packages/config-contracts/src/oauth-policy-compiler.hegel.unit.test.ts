@@ -6,7 +6,12 @@ import { createOAuthPolicyCompilerTestInput } from './oauth-policy-compiler-test
 import { compileOAuthPolicy, configuredGoogleOperationKey } from './oauth-tool-portal-config.js';
 import { toolPortalConfigSchema } from './tool-portal-config.js';
 
-const settings = { testCases: 500, derandomize: true, database: hegel.Database.disabled };
+const settings = {
+	testCases: 500,
+	seed: 20261117,
+	derandomize: true,
+	database: hegel.Database.disabled,
+};
 
 it('intersects authored command paths with the independent catalog and preserves local help', () => {
 	hegel.test((tc) => {

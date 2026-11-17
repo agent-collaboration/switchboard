@@ -74,7 +74,7 @@ it('binds the audience, ordered call fields, key, agent, and expiry', async () =
 				}),
 			);
 		},
-		{ testCases: 500, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });
 

@@ -82,6 +82,6 @@ it('binds every committed intent field while ignoring object insertion order and
 				changed.map(async (entry) => expect(await dispatchIntentDigest(entry)).not.toBe(digest)),
 			);
 		},
-		{ testCases: 500, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });

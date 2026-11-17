@@ -9,7 +9,12 @@ import {
 } from '#tool-access/authorization/cli-allowances/index';
 import { classifyCliPathContribution } from '#tool-access/authorization/cli-path-policy';
 
-const settings = { testCases: 500, derandomize: true, database: hegel.Database.disabled };
+const settings = {
+	testCases: 500,
+	seed: 20261117,
+	derandomize: true,
+	database: hegel.Database.disabled,
+};
 
 it('applies AND predicates, OR alternatives, and deny before ask and baseline', () => {
 	hegel.test((tc) => {

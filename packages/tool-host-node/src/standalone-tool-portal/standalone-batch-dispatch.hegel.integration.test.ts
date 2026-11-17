@@ -174,6 +174,6 @@ it('models repeated backend admission while the selected resource runs at most o
 				prepared.release();
 			}
 		},
-		{ testCases: 100, derandomize: true, database: hegel.Database.disabled },
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });
