@@ -116,6 +116,39 @@ export class NativeBrowserPage {
 			empty,
 		);
 	}
+	/** Keyboard activation follows the focused button even when a sibling changes the layout. */
+	async activateButton(selector: string, label: string): Promise<void> {
+		await this.evaluate(
+			`(()=>{const button=[...document.querySelectorAll(${JSON.stringify(selector)})].find(node=>node.textContent.trim()===${JSON.stringify(label)});if(!(button instanceof HTMLButtonElement)||!button.isConnected||button.disabled)throw new Error('Enabled keyboard control missing');button.focus({preventScroll:true});const rect=button.getBoundingClientRect();return button===document.activeElement&&rect.width>0&&rect.height>0;})()`,
+			z.literal(true),
+		);
+		await this.evaluate(
+			`(()=>{const button=document.activeElement;return button instanceof HTMLButtonElement&&button.isConnected&&!button.disabled&&button.matches(${JSON.stringify(selector)})&&button.textContent.trim()===${JSON.stringify(label)};})()`,
+			z.literal(true),
+		);
+		await this.protocol.call(
+			'Input.dispatchKeyEvent',
+			{
+				type: 'rawKeyDown',
+				key: ' ',
+				code: 'Space',
+				windowsVirtualKeyCode: 32,
+				nativeVirtualKeyCode: 32,
+			},
+			empty,
+		);
+		await this.protocol.call(
+			'Input.dispatchKeyEvent',
+			{
+				type: 'keyUp',
+				key: ' ',
+				code: 'Space',
+				windowsVirtualKeyCode: 32,
+				nativeVirtualKeyCode: 32,
+			},
+			empty,
+		);
+	}
 	async enter(selector: string, value: string): Promise<void> {
 		await this.click(selector);
 		await this.evaluate(

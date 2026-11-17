@@ -484,12 +484,14 @@ export async function observeNativePasskeyBrowser(
 					z.object({
 						kind: z.literal('click'),
 						expectedControl: z.boolean(),
+						trusted: z.boolean(),
 						target: actualTarget,
 					}),
 					z.object({
 						kind: z.literal('submit'),
 						expectedForm: z.boolean(),
 						defaultPrevented: z.boolean(),
+						trusted: z.boolean(),
 					}),
 				]);
 				const clickObserved = Promise.withResolvers<void>();
@@ -503,14 +505,14 @@ export async function observeNativePasskeyBrowser(
 					const input = cliInput.parse(JSON.parse(event.data.payload));
 					switch (input.kind) {
 						case 'click':
-							if (input.expectedControl) clickObserved.resolve();
+							if (input.expectedControl && input.trusted) clickObserved.resolve();
 							else
 								missedClick.reject(
 									new Error('Native CLI Continue click hit ' + JSON.stringify(input.target)),
 								);
 							break;
 						case 'submit':
-							if (input.expectedForm) submitObserved.resolve();
+							if (input.expectedForm && input.trusted) submitObserved.resolve();
 							else submitObserved.reject(new Error('Native CLI submitted an unexpected form'));
 							break;
 						default:
@@ -571,13 +573,13 @@ export async function observeNativePasskeyBrowser(
 							await phase('passkey-cli-controls');
 							await page.readyWhen("!!document.querySelector('#owner-sign-in button')");
 							await page.evaluate(
-								`(()=>{const form=document.querySelector('#owner-sign-in');const button=form?.querySelector('button');if(!form||!button)throw new Error('CLI control missing before observation');document.addEventListener('click',event=>window.reportPasskeyCliInput(JSON.stringify({kind:'click',expectedControl:event.target instanceof Element&&event.target.closest('#owner-sign-in button')===button,target:event.target instanceof Element?{tag:event.target.tagName.toLowerCase(),id:event.target.id,classes:[...event.target.classList]}:{tag:'non-element',id:'',classes:[]}})),true);document.addEventListener('submit',event=>window.reportPasskeyCliInput(JSON.stringify({kind:'submit',expectedForm:event.target===form,defaultPrevented:event.defaultPrevented})));return true;})()`,
+								`(()=>{const form=document.querySelector('#owner-sign-in');const button=form?.querySelector('button');if(!form||!button)throw new Error('CLI control missing before observation');document.addEventListener('click',event=>window.reportPasskeyCliInput(JSON.stringify({kind:'click',expectedControl:event.target instanceof Element&&event.target.closest('#owner-sign-in button')===button,trusted:event.isTrusted,target:event.target instanceof Element?{tag:event.target.tagName.toLowerCase(),id:event.target.id,classes:[...event.target.classList]}:{tag:'non-element',id:'',classes:[]}})),true);document.addEventListener('submit',event=>window.reportPasskeyCliInput(JSON.stringify({kind:'submit',expectedForm:event.target===form,defaultPrevented:event.defaultPrevented,trusted:event.isTrusted})));return true;})()`,
 								z.literal(true),
 							);
 							await phase('passkey-cli-continue');
 							const navigation = page.afterNavigation(undefined, async (): Promise<void> => {
 								await phase('passkey-cli-click');
-								await page.click('#owner-sign-in button', 'Continue to management CLI');
+								await page.activateButton('#owner-sign-in button', 'Continue to management CLI');
 								await Promise.race([clickObserved.promise, missedClick.promise]);
 								await phase('passkey-cli-navigation');
 							});
