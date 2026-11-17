@@ -106,7 +106,13 @@ export async function exerciseOrganizationChooser(
 		target: harness.target,
 		repositoryRoot: context.root,
 		browser: async (initialUrl: string): Promise<readonly string[]> => {
-			await page.navigate(initialUrl);
+			// Enter with the native session arranged above. Sign-in-page navigation is outside V2.
+			const ownerReady = new URL(initialUrl);
+			expect(ownerReady.origin).toBe(new URL(harness.issuer).origin);
+			expect(ownerReady.pathname).toBe('/sign-in');
+			expect(ownerReady.searchParams.get('authorize')).toBeTruthy();
+			ownerReady.pathname = '/owner-ready';
+			await page.navigate(ownerReady.toString());
 			await organizationDomReady(
 				page,
 				`document.querySelector('h1')?.textContent==='Choose your organization' && !!document.querySelector('[data-sign-in-island-mounted] #choose-organization button')`,

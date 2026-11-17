@@ -1,4 +1,4 @@
-import { member, organization, session } from '@agent-collaboration/sign-in-core';
+import { member, oauthResource, organization, session } from '@agent-collaboration/sign-in-core';
 import { and, eq } from 'drizzle-orm';
 import { expect, it } from 'vitest';
 
@@ -23,6 +23,22 @@ const path = '/api/auth/organization/self-context';
 it('people: self-context distinguishes signed out from a verified person with zero memberships without selecting or writing', async (): Promise<void> => {
 	const harness = await startLocalAuthHarness();
 	try {
+		// Native oauthProvider init seeds its configured resources on the first request.
+		expect((await harness.auth('/api/auth/jwks')).status).toBe(200);
+		const centralAdminAudience = harness.target.centralAdminAudience;
+		if (centralAdminAudience === undefined) throw new Error('Central admin audience is missing');
+		expect(
+			await harness.database
+				.select({ identifier: oauthResource.identifier })
+				.from(oauthResource)
+				.orderBy(oauthResource.identifier),
+		).toEqual(
+			[harness.target.managementAudience, centralAdminAudience]
+				.toSorted((left, right) => left.localeCompare(right))
+				.map((identifier) => ({ identifier })),
+		);
+		expect(await harness.database.select().from(member)).toEqual([]);
+		expect(await harness.database.select().from(session)).toEqual([]);
 		await expectUnchangedOrganizationRead({
 			harness,
 			request: () => harness.auth(path, { headers: { cookie: '' } }),
@@ -166,9 +182,17 @@ it('people: an expired self-context performs exactly native session cleanup, ret
 			.update(session)
 			.set({ expiresAt: new Date(expiresAt) })
 			.where(eq(session.id, scenario.ownerSessionId));
+		expect(
+			await harness.database
+				.select({ expiresAt: session.expiresAt })
+				.from(session)
+				.where(eq(session.id, scenario.ownerSessionId)),
+		).toEqual([{ expiresAt: new Date(expiresAt) }]);
 		const before = await captureExpiredSessionCleanup(harness);
 		await setOrganizationReadClock(harness, expiresAt + 1);
-		const response = await harness.auth(path, { headers: { cookie: scenario.ownerCookie } });
+		const response = await harness.auth(path, {
+			headers: { cookie: scenario.ownerCookie },
+		});
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ kind: 'signed-out' });
 		await expectExpiredSessionCleanup({

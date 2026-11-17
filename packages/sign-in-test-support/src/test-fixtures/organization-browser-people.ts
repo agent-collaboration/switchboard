@@ -1,4 +1,5 @@
 import {
+	account,
 	invitation,
 	member,
 	passkey,
@@ -7,7 +8,7 @@ import {
 	twoFactor,
 	user,
 } from '@agent-collaboration/sign-in-core';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { expect } from 'vitest';
 import { z } from 'zod';
 
@@ -21,7 +22,11 @@ import {
 	organizationDomReady,
 	tabToOrganizationControl,
 } from '#sign-in-test-support/test-fixtures/organization-browser-transport';
-import { signInPeopleBrowser } from '#sign-in-test-support/test-fixtures/people-browser-login';
+import {
+	peoplePost,
+	signInConfirmedPeopleBrowser,
+	signInPeopleBrowser,
+} from '#sign-in-test-support/test-fixtures/people-browser-login';
 
 const lookupPath = '/api/auth/organization/person-membership';
 const listPath = '/api/auth/organization/people-list';
@@ -72,13 +77,59 @@ export async function exerciseOrganizationPeople(
 ): Promise<void> {
 	const { harness, page, protocol, responses } = context;
 	const ownerCookie = harness.cookie();
-	const members = Array.from({ length: 100 }, (_, index) => ({
+	expect(
+		(
+			await peoplePost(
+				harness,
+				'set-active',
+				{ organizationId: context.firstOrganizationId },
+				ownerCookie,
+			)
+		).status,
+	).toBe(200);
+	// Native setup for the member who later signs in: an email-only seeded user cannot
+	// implicitly acquire a provider account under the production linking policy.
+	const nativeMemberEmail = 'browser-member-001@example.invalid';
+	const invited = await peoplePost(
+		harness,
+		'invite-member',
+		{
+			organizationId: context.firstOrganizationId,
+			email: nativeMemberEmail,
+			role: 'member',
+		},
+		ownerCookie,
+	);
+	expect(invited.status).toBe(200);
+	const invitationId = z.object({ id: z.uuidv7() }).parse(await invited.json()).id;
+	const nativeMemberId = await signInConfirmedPeopleBrowser({ harness, email: nativeMemberEmail });
+	expect((await peoplePost(harness, 'accept-invitation', { invitationId })).status).toBe(200);
+	expect(
+		await harness.database
+			.select({ organizationId: member.organizationId, role: member.role })
+			.from(member)
+			.where(eq(member.userId, nativeMemberId)),
+	).toEqual([{ organizationId: context.firstOrganizationId, role: 'member' }]);
+	expect(
+		await harness.database
+			.select({ providerId: account.providerId })
+			.from(account)
+			.where(eq(account.userId, nativeMemberId)),
+	).toEqual([{ providerId: 'google' }]);
+	expect(
+		await harness.database
+			.select({ status: invitation.status })
+			.from(invitation)
+			.where(eq(invitation.id, invitationId)),
+	).toEqual([{ status: 'accepted' }]);
+	harness.useBrowser('owner@example.invalid');
+	const members = Array.from({ length: 99 }, (_, index) => ({
 		id: controlledSignInIds.nextId(),
-		name: `Browser member ${String(index + 1).padStart(3, '0')}`,
-		email: `browser-member-${String(index + 1).padStart(3, '0')}@example.invalid`,
+		name: `Browser member ${String(index + 2).padStart(3, '0')}`,
+		email: `browser-member-${String(index + 2).padStart(3, '0')}@example.invalid`,
 		createdAt: new Date(controlledSignInClock.now() + index + 1),
 	}));
-	// These are labelled fixture rows, not a claim of native invitation acceptance.
+	// The other 99 members supply list volume only; they never sign in.
 	await members.reduce(
 		async (previous: Promise<void>, person: (typeof members)[number]): Promise<void> => {
 			await previous;
@@ -106,15 +157,6 @@ export async function exerciseOrganizationPeople(
 		createdAt: new Date(controlledSignInClock.now()),
 		inviterId: context.ownerPersonId,
 	});
-	expect(
-		(
-			await harness.auth('/api/auth/organization/set-active', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ organizationId: context.firstOrganizationId }),
-			})
-		).status,
-	).toBe(200);
 	const expected = await harness.database
 		.select({ name: user.name, email: user.email, role: member.role })
 		.from(member)
@@ -317,9 +359,18 @@ export async function exerciseOrganizationPeople(
 	).toEqual([404, 404, 404, 404]);
 	expect(await readPeopleTables(context)).toEqual(beforeReads);
 	// A genuine member session can reach admin, whose People link requires its own permission gate.
-	const firstMember = members[0];
-	if (firstMember === undefined) throw new Error('Member fixture absent');
-	await signInPeopleBrowser({ harness, email: firstMember.email });
+	expect(await signInPeopleBrowser({ harness, email: nativeMemberEmail })).toBe(nativeMemberId);
+	expect(
+		await harness.database
+			.select({ role: member.role })
+			.from(member)
+			.where(
+				and(
+					eq(member.organizationId, context.firstOrganizationId),
+					eq(member.userId, nativeMemberId),
+				),
+			),
+	).toEqual([{ role: 'member' }]);
 	expect(
 		(
 			await harness.auth('/api/auth/organization/set-active', {

@@ -285,13 +285,23 @@ export async function expectOrganizationReadRefusal(props: {
 			.update(session)
 			.set({ expiresAt: new Date(controlledSignInClock.now() + 1_000) })
 			.where(eq(session.id, scenario.ownerSessionId));
+		expect(
+			await harness.database
+				.select({ expiresAt: session.expiresAt })
+				.from(session)
+				.where(eq(session.id, scenario.ownerSessionId)),
+		).toEqual([{ expiresAt: new Date(controlledSignInClock.now() + 1_000) }]);
 		await setOrganizationReadClock(harness, controlledSignInClock.now() + 1_001);
 	}
 	await harness.settleDeferredWork();
 	const before = await allSignInRowFingerprints(harness);
 	const expiredCleanup = refusal === 'expired' ? await captureExpiredSessionCleanup(harness) : null;
 	const counts = await organizationReadCounts(harness);
-	const response = await requestOrganizationRead({ scenario, kind: props.kind, cookie });
+	const response = await requestOrganizationRead({
+		scenario,
+		kind: props.kind,
+		cookie,
+	});
 	expect(response.status).toBe(
 		['member', 'foreign-owner', 'removed-owner'].includes(refusal) ? 403 : 401,
 	);
