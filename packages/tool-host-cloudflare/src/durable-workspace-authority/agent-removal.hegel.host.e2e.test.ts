@@ -108,6 +108,13 @@ it('M4 keeps admission, unlink/disable, idempotency and conflicts through real D
 			tc.note(`isolated workspace ${workspaceId}`);
 			await runAgentRemovalModel(tc, durableAuthority(workspaceId));
 		},
-		{ testCases: 25, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
+		{
+			testCases: 25,
+			seed: 20261117,
+			derandomize: true,
+			database: hegel.Database.disabled,
+			// Durable Object round trips dominate the measured generation time.
+			suppressHealthCheck: [hegel.HealthCheck.TooSlow],
+		},
 	);
 });
