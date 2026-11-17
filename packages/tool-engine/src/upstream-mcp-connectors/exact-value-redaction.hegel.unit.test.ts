@@ -97,17 +97,27 @@ it('redacts the union of substring, partial-overlap and adjacent secret occurren
 				[...input.values, '', input.values[0] ?? ''],
 			]) {
 				const actual = redactExactCredentialText(input.text, { exactValues: values });
+				const expectedKey = coveredText('nested', values).redacted;
 				expect(actual).toBe(expected.redacted);
 				assertNoNewSecretFragments({ actual, values, outsideSecrets: expected.outsideSecrets });
 				expect(
 					redactUpstreamCatalogValue({ nested: [input.text] }, { exactValues: values }),
-				).toEqual({ nested: [expected.redacted] });
+				).toEqual({ [expectedKey]: [expected.redacted] });
 				expect(redactUpstreamResponse({ nested: [input.text] }, { exactValues: values })).toEqual({
-					nested: [expected.redacted],
+					[expectedKey]: [expected.redacted],
 				});
 			}
 		}
 	}, settings);
+});
+
+it('redacts the union wrapper key when a legal generated value also matches that key', () => {
+	const values = ['nest', 'nest00000000'];
+	const input = { nested: ['PUBLIC<nest00000000>END'] };
+	const expected = { '[REDACTED]ed': ['PUBLIC<[REDACTED]>END'] };
+	expect(coveredText('nested', values).redacted).toBe('[REDACTED]ed');
+	expect(redactUpstreamCatalogValue(input, { exactValues: values })).toEqual(expected);
+	expect(redactUpstreamResponse(input, { exactValues: values })).toEqual(expected);
 });
 
 it('matches independent character coverage for generated multi-value occurrence sets', () => {
