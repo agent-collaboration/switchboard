@@ -190,7 +190,17 @@ export function createSignInHttpHandler(
 				? ownerAuthorizationResume(url.searchParams.get('authorize'), configuration.configuration)
 				: null;
 			if (url.pathname === '/api/auth/link-social') {
-				const payload: unknown = await request.clone().json();
+				let payload: unknown;
+				try {
+					payload = await request.clone().json();
+				} catch (error) {
+					if (!(error instanceof SyntaxError)) throw error;
+					// Match the native parser before the live-session check can hide malformed JSON.
+					return Response.json(
+						{ code: 'BAD_REQUEST', message: 'Invalid JSON in request body' },
+						{ status: 400, headers: { 'cache-control': 'no-store' } },
+					);
+				}
 				if (payload !== null && typeof payload === 'object' && Object.hasOwn(payload, 'idToken'))
 					return Response.json({ error: 'redirect-linking-required' }, { status: 400 });
 			}
