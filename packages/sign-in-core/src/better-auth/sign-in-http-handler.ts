@@ -1,3 +1,4 @@
+import { decodeBasicCredentials } from '@better-auth/core/oauth2';
 import { decodeJwt, decodeProtectedHeader } from 'jose';
 
 import {
@@ -437,18 +438,18 @@ function invalidRequestResponse(): Response {
 }
 
 /**
- * The client an `Authorization: Basic` header names, when it decodes. An undecodable header names
- * none; the provider then refuses it itself as `invalid_client` with a Basic challenge
- * (oauth-provider 1.7.11 `dist/utils-vIo_wPv5.mjs:607-621`).
+ * The client an `Authorization` header names as a Basic credential, decoded by the provider's own
+ * decoder (`@better-auth/core` 1.7.11 `dist/oauth2/basic-credentials.mjs:48-60`, which the
+ * oauth-provider's client authentication also uses), so this wrapper and the provider never disagree
+ * on which client a header names. A header that decoder refuses names none here, and the provider
+ * then refuses it itself as `invalid_client` with a Basic challenge (oauth-provider 1.7.11
+ * `dist/utils-vIo_wPv5.mjs:607-621`).
  */
 function basicClientId(authorization: string | null): string | undefined {
-	const encoded = authorization?.match(/^Basic ([^\s]+)$/iu)?.[1];
-	if (encoded === undefined) return undefined;
+	if (authorization === null) return undefined;
 	try {
-		return atob(encoded).split(':')[0];
-	} catch (error) {
-		// `atob` refuses non-base64 input with an `InvalidCharacterError` DOMException, an Error.
-		if (error instanceof Error && error.name === 'InvalidCharacterError') return undefined;
-		throw error;
+		return decodeBasicCredentials(authorization).clientId;
+	} catch {
+		return undefined;
 	}
 }
