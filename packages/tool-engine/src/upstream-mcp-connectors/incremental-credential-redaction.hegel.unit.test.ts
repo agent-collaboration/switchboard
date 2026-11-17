@@ -83,11 +83,12 @@ it('fails closed when an unresolved authorization prefix exceeds its named cap',
 });
 
 it('retains original exact overlap context even when a pattern exceeds the cap', () => {
-	const secret = `${' '.repeat(maximumPendingCredentialPatternCharacters + 10)}opaque`;
+	// The suffix after '!' is outside the authorization pattern and needs the exact match.
+	const secret = `${' '.repeat(maximumPendingCredentialPatternCharacters + 10)}opaque!suffix`;
 	const redactor = createCredentialTextRedactor({ exactValues: [secret] });
 	const output = [
 		redactor.write(`Bearer ${secret.slice(0, -3)}`),
-		redactor.write('que'),
+		redactor.write(secret.slice(-3)),
 		redactor.end(),
 	];
 	expect(output.join('')).toBe('[REDACTED]');
