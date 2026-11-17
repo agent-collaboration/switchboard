@@ -124,7 +124,7 @@ it('binds generated keys and variable batches with adversarial identity and dige
 			}));
 			const lifetime = tc.draw(generators.integers({ minValue: 1, maxValue: 10000 }));
 			tc.note(
-				`audience=${JSON.stringify(audience)} agent=${JSON.stringify(agentId)} key=${Array.from(key)} calls=${JSON.stringify(calls)} lifetime=${lifetime}`,
+				`audience=${JSON.stringify(audience)} agent=${JSON.stringify(agentId)} key=${JSON.stringify(Array.from(key))} calls=${JSON.stringify(calls)} lifetime=${lifetime}`,
 			);
 			const props = {
 				key,
