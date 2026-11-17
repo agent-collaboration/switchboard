@@ -1,0 +1,27 @@
+export {
+	JsonSchemaDocumentSchema,
+	ToolSchemaSummarySchema,
+	ToolSafetySummarySchema,
+	ToolSchemaHintSchema,
+	ToolCallDispositionSchema,
+	CapabilityDiscoveryMetadataSchema,
+	CapabilitySummarySchema,
+	CompactCapabilityDescriptionCodePointLimit,
+	compactCapabilitySummaryDescription,
+	ResultExpectationSchema,
+	SafeCallingHintSchema,
+	CapabilitySearchMatchSchema,
+	CapabilityDescriptorSchema,
+} from '@agent-collaboration/tool-access/contracts';
+export type {
+	ToolSchemaSummary,
+	ToolSafetySummary,
+	ToolSchemaHint,
+	ToolCallDisposition,
+	CapabilityDiscoveryMetadata,
+	CapabilitySummary,
+	ResultExpectation,
+	SafeCallingHint,
+	CapabilitySearchMatch,
+	CapabilityDescriptor,
+} from '@agent-collaboration/tool-access/contracts';

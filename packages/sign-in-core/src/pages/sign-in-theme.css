@@ -1,0 +1,7 @@
+/* Third-party notices: THIRD_PARTY_NOTICES.md#bridgeweb-theme (repository root). */
+@import '@agent-collaboration/tool-access-ui/theme.css';
+@import '@agent-collaboration/auth-ui/styles.css';
+
+@source './**/*.tsx';
+@source '../../node_modules/@agent-collaboration/tool-access-ui/dist/**/*.js';
+@source '../../node_modules/@agent-collaboration/auth-ui/dist/**/*.js';

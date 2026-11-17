@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    name: Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - parallel:
+          - name: Set up Node workspace
+            uses: ./.github/actions/setup-agent-vm
+            with:
+              build: 'false'
+
+          - name: Set up Python workspace
+            uses: ./.github/actions/setup-python-workspace
+
+      - name: Quality checks
+        run: pnpm check
+
+      - parallel:
+          - name: Unit tests
+            run: pnpm test:unit
+
+          - name: Integration tests
+            run: pnpm test:integration
+
+          - name: Host Python tests
+            run: pnpm python:test:host
+
+  e2e-host:
+    name: E2E (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lane:
+          - host
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - parallel:
+          - name: Set up Node workspace
+            uses: ./.github/actions/setup-agent-vm
+
+          - name: Set up system packages
+            uses: ./.github/actions/setup-system-packages
+
+          - name: Set up Python workspace
+            if: matrix.lane == 'host'
+            uses: ./.github/actions/setup-python-workspace
+
+      - name: Run E2E lane
+        env:
+          AGENT_VM_E2E_SKIP_WORKSPACE_BUILD: '1'
+        run: pnpm run test:e2e:${{ matrix.lane }}
+
+  check:
+    name: check
+    if: always()
+    needs:
+      - validation
+      - e2e-host
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI lane to pass
+        env:
+          VALIDATION_RESULT: ${{ needs.validation.result }}
+          E2E_HOST_RESULT: ${{ needs.e2e-host.result }}
+        run: |
+          set -euo pipefail
+          results=(
+            "validation=${VALIDATION_RESULT}"
+            "e2e-host=${E2E_HOST_RESULT}"
+          )
+          printf '%s\n' "${results[@]}"
+          for result in "${results[@]}"; do
+            if [[ "${result##*=}" != success ]]; then
+              echo "CI lane did not pass: ${result}" >&2
+              exit 1
+            fi
+          done

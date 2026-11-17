@@ -1,0 +1,87 @@
+{
+	// Illustrative only: replace every example.test identity and example-agent-vm
+	// 1Password reference with deployment-owned values before use.
+	"schemaVersion": 3,
+	"zoneId": "example-zone",
+	"browser": {
+		"publicBaseUrl": "https://permissions.example.test",
+		"listener": {
+			"kind": "loopback_http",
+			"port": 18901,
+		},
+		"identity": {
+			"kind": "cloudflare-access",
+			"issuer": "https://example.cloudflareaccess.com",
+			"audience": "replace-with-access-application-audience",
+		},
+	},
+	"owners": {
+		"example-owner": {
+			"label": "Example owner",
+			"subject": "replace-with-access-subject",
+			"allowedAgentIds": ["sun", "ember"],
+		},
+	},
+	"policyEditors": {
+		"example-editor": {
+			"subject": "replace-with-access-subject",
+			"editableAgentIds": ["sun", "ember"],
+		},
+	},
+	"providers": {
+		"google": {
+			"kind": "google",
+			"catalogVersion": "google-gog-v0.38.1-v1",
+			"gogBuildIdentity": {
+				"version": "0.38.1",
+				"commit": "324f656a4949c3adbf8e1f18066d3965757ed9db",
+			},
+			"projects": {
+				"example-project": {
+					"publishingStatus": "testing",
+				},
+			},
+			"applications": {
+				"gmail-app": {
+					"catalogFamilyId": "communications",
+					"clientKind": "web",
+					"label": "Gmail, Calendar, and Contacts",
+					"description": "Example communication-family OAuth application.",
+					"projectId": "example-project",
+					"clientCredentials": {
+						"source": "1password",
+						"ref": "op://example-agent-vm/google-communications/client-json",
+					},
+				},
+				"workspace-app": {
+					"catalogFamilyId": "documents",
+					"clientKind": "web",
+					"label": "Drive and documents",
+					"description": "Example document-family OAuth application.",
+					"projectId": "example-project",
+					"clientCredentials": {
+						"source": "1password",
+						"ref": "op://example-agent-vm/google-documents/client-json",
+					},
+				},
+				"youtube-app": {
+					"catalogFamilyId": "youtube",
+					"clientKind": "web",
+					"label": "YouTube",
+					"description": "Example YouTube-family OAuth application.",
+					"projectId": "example-project",
+					"clientCredentials": {
+						"source": "1password",
+						"ref": "op://example-agent-vm/google-youtube/client-json",
+					},
+				},
+			},
+		},
+	},
+	"storage": {
+		"keyEncryptionKey": {
+			"source": "1password",
+			"ref": "op://example-agent-vm/oauth/wrapping-key",
+		},
+	},
+}

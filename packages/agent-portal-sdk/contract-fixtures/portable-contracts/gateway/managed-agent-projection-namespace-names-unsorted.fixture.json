@@ -1,0 +1,23 @@
+{
+	"caseId": "gateway-managed-agent-projection-namespace-names-unsorted",
+	"schemaId": "gateway.managed-agent-projection",
+	"tags": ["managed-agent-projection", "namespace-names", "rejected", "unsorted"],
+	"input": {
+		"agentId": "agent-a",
+		"frameworkIdentity": {
+			"kind": "hermes",
+			"profileName": "agent-a"
+		},
+		"profileAssignmentRevision": "profile-assignment-a",
+		"toolPortalNamespaces": [{ "namespace": "github" }, { "namespace": "filesystem" }],
+		"toolPortalProfileId": "engineering"
+	},
+	"expectation": {
+		"kind": "rejected",
+		"errorCodes": ["gateway.managed-agent-projection.namespaces"],
+		"refinementIdentities": [
+			"gateway.managed-agent-projection.namespaces",
+			"portal.namespace-discovery.summary-code-points"
+		]
+	}
+}

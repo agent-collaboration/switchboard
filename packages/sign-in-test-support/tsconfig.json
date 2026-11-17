@@ -1,0 +1,12 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"jsx": "react-jsx",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2024", "DOM", "DOM.Iterable"],
+		"types": ["node", "../sign-in-host-cloudflare/worker-configuration.gen.d.ts"]
+	},
+	"include": ["src/**/*.ts"],
+	"exclude": ["dist"]
+}

@@ -1,0 +1,67 @@
+{
+	"name": "@agent-collaboration/sign-in-core",
+	"version": "0.0.153",
+	"description": "Runtime-free sign-in rules, schema and Better Auth boundary.",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/agent-collaboration/switchboard.git",
+		"directory": "packages/sign-in-core"
+	},
+	"files": [
+		"dist",
+		"drizzle",
+		"contract-fixtures"
+	],
+	"type": "module",
+	"imports": {
+		"#sign-in-page-assets": "./__generated__/sign-in-page-assets.js",
+		"#sign-in-core/pages/*": "./src/pages/*.tsx",
+		"#sign-in-core/*": "./src/*.ts"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./better-auth": {
+			"types": "./dist/better-auth/index.d.ts",
+			"import": "./dist/better-auth/index.js"
+		},
+		"./person-identity": {
+			"types": "./dist/contracts/person-identity-contracts.d.ts",
+			"import": "./dist/contracts/person-identity-contracts.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tailwindcss -i src/pages/sign-in-theme.css -o __generated__/sign-in.css --minify && tsdown -c tsdown.island.config.ts && node scripts/embed-page-assets.ts && tsdown",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@agent-collaboration/auth-ui": "workspace:*",
+		"@agent-collaboration/tool-access": "workspace:*",
+		"@agent-collaboration/tool-access-ui": "workspace:*",
+		"@better-auth/core": "1.7.11",
+		"@better-auth/oauth-provider": "1.7.11",
+		"@better-auth/passkey": "1.7.11",
+		"@simplewebauthn/server": "13.3.3",
+		"@tanstack/react-query": "5.107.1",
+		"better-auth": "1.7.11",
+		"drizzle-orm": "0.45.2",
+		"jose": "6.2.12",
+		"lucide-react": "1.59.0",
+		"react": "19.3.1",
+		"react-dom": "19.3.1",
+		"uqr": "0.1.3",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@tailwindcss/cli": "^4.3.3",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"tailwindcss": "^4.3.3"
+	}
+}

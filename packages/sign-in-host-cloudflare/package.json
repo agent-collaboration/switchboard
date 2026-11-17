@@ -1,0 +1,49 @@
+{
+	"name": "@agent-collaboration/sign-in-host-cloudflare",
+	"version": "0.0.153",
+	"description": "Cloudflare Worker composition and D1 adapter for sign-in.",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/agent-collaboration/switchboard.git",
+		"directory": "packages/sign-in-host-cloudflare"
+	},
+	"files": [
+		"dist",
+		"worker-configuration.gen.d.ts",
+		"wrangler.example.jsonc"
+	],
+	"type": "module",
+	"imports": {
+		"#sign-in-host-cloudflare/*": "./src/*.ts"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./configuration": {
+			"types": "./dist/worker-configuration.d.ts",
+			"import": "./dist/worker-configuration.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "pnpm types:check && tsc -p tsconfig.json --noEmit",
+		"types:generate": "wrangler types worker-configuration.gen.d.ts --config wrangler.example.jsonc --env-interface AuthWorkerEnv --strict-vars=false",
+		"types:check": "wrangler types worker-configuration.gen.d.ts --config wrangler.example.jsonc --env-interface AuthWorkerEnv --strict-vars=false --check"
+	},
+	"dependencies": {
+		"@agent-collaboration/sign-in-core": "workspace:*",
+		"@agent-collaboration/sign-in-platform-web": "workspace:*",
+		"@better-auth/core": "1.7.11",
+		"drizzle-orm": "0.45.2",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"wrangler": "4.124.0"
+	}
+}

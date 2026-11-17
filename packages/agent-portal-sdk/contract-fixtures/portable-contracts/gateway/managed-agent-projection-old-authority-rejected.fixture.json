@@ -1,0 +1,24 @@
+{
+	"caseId": "gateway-managed-agent-projection-old-authority-rejected",
+	"schemaId": "gateway.managed-agent-projection",
+	"tags": ["managed-agent-projection", "old-authority", "rejected"],
+	"input": {
+		"agentId": "agent-a",
+		"frameworkIdentity": {
+			"kind": "hermes",
+			"profileName": "agent-a"
+		},
+		"profileAssignmentRevision": "profile-assignment-a",
+		"profileId": "retired-profile-selector",
+		"toolPortalNamespaces": [],
+		"toolPortalProfileId": "engineering"
+	},
+	"expectation": {
+		"kind": "rejected",
+		"errorCodes": ["portable.object.unknown-field"],
+		"refinementIdentities": [
+			"gateway.managed-agent-projection.namespaces",
+			"portal.namespace-discovery.summary-code-points"
+		]
+	}
+}

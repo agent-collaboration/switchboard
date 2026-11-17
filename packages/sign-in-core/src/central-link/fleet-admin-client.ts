@@ -1,0 +1,173 @@
+import { z } from 'zod';
+
+import type { CentralTransport } from '#sign-in-core/central-link/central-transport';
+import {
+	fleetAdminRequestBody,
+	fleetAdminRoutePaths,
+	fleetAdminWorkspaceNameSchema,
+	type FleetAdminRequest,
+} from '#sign-in-core/organizations/fleet-admin-operation';
+import type { CentralLinkUncertainty } from '#sign-in-core/organizations/organization-provisioning';
+
+// Central's closed `OrganizationAdminResult` (codex-router #275, merged as `ea030e513`,
+// `collaboration-central-core/src/organization_admin_contract.rs`; mirrored in
+// `contract-fixtures/central-organization-admin/`), tag `result`.
+const workspaceSchema = z.strictObject({
+	workspaceId: z
+		.string()
+		.regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
+	name: fleetAdminWorkspaceNameSchema,
+	description: z
+		.string()
+		// Central #275 `WorkspaceView`: at most 2048 UTF-8 bytes, the same bound a create sends.
+		.refine((text) => new TextEncoder().encode(text).length <= 2048, 'Description too long'),
+	state: z.enum(['active', 'archiving', 'archived']),
+});
+export const fleetAdminRefusalReasonSchema = z.enum([
+	/** Another workspace already holds this name (case-insensitive, trimmed). */
+	'nameInUse',
+	'notPermitted',
+	'secondFactorRequired',
+	'refreshRequired',
+	'authorizationSyncRequired',
+	'expired',
+	'requestTime',
+	'requestReused',
+	/** The same operation ID arrived with a different request. */
+	'conflict',
+	'rejected',
+]);
+export type FleetAdminRefusalReason = z.infer<typeof fleetAdminRefusalReasonSchema>;
+const refusedSchema = z.strictObject({
+	result: z.literal('refused'),
+	reason: fleetAdminRefusalReasonSchema,
+});
+const changeRecordSchema = z.strictObject({
+	id: z.uuid(),
+	requestId: z.string().min(1).max(128),
+	kind: z.enum(['organizationProvisioned', 'stampRenewed', 'workspaceCreated']),
+	/** A sign-in-originated change carries no person or permission. */
+	origin: z.discriminatedUnion('kind', [
+		z.strictObject({ kind: z.literal('signInProvisioning') }),
+		z.strictObject({
+			kind: z.literal('person'),
+			personId: z.string(),
+			permissionChecked: z.string(),
+		}),
+	]),
+	targetId: z.string(),
+	createdAtMillis: z.number().int(),
+});
+export const fleetAdminResultSchemas = {
+	CreateWorkspace: z.union([
+		z.strictObject({ result: z.literal('applied'), workspace: workspaceSchema }),
+		refusedSchema,
+	]),
+	WorkspaceLookup: z.union([
+		z.strictObject({ result: z.literal('found'), workspace: workspaceSchema.nullable() }),
+		refusedSchema,
+	]),
+	ReadChangeRecords: z.union([
+		z.strictObject({ result: z.literal('records'), records: z.array(changeRecordSchema) }),
+		refusedSchema,
+	]),
+} as const;
+export type FleetAdminResult =
+	| z.infer<(typeof fleetAdminResultSchemas)['CreateWorkspace']>
+	| z.infer<(typeof fleetAdminResultSchemas)['WorkspaceLookup']>
+	| z.infer<(typeof fleetAdminResultSchemas)['ReadChangeRecords']>;
+
+/**
+ * Central's answer, or why there is none. 401 (any token or proof failure, empty body) and 400
+ * (a body central could not parse: our defect, never retried) are their own outcomes.
+ */
+export type FleetAdminAnswer =
+	| { readonly kind: 'answered'; readonly result: FleetAdminResult }
+	| { readonly kind: 'unauthenticated' }
+	| { readonly kind: 'request-refused' }
+	/**
+	 * Central itself answered 503. Pinned central `e847a888` answers an unstamped store that way
+	 * too (empty body, revealing nothing); only a digest read tells them apart (WS7 R-notdue).
+	 */
+	| { readonly kind: 'answered-unavailable' }
+	| { readonly kind: 'unknown'; readonly reason: CentralLinkUncertainty };
+
+export interface FleetAdminLinkClient {
+	/**
+	 * `signal`, when given, aborts the request on the link: WS7 R-retrysignal passes the run's
+	 * deadline only on the retry after a recovery, never on the first send.
+	 */
+	readonly sendFleetAdminRequest: (props: {
+		readonly operation: FleetAdminRequest;
+		readonly accessToken: string;
+		readonly proof: string;
+		readonly signal?: AbortSignal;
+	}) => Promise<FleetAdminAnswer>;
+	/**
+	 * The CLI's request, relayed unchanged: its own `Authorization`, `DPoP` and body bytes.
+	 * Central verifies them; nothing here parses or re-encodes the body.
+	 */
+	readonly relayFleetAdminRequest: (props: {
+		readonly operation: FleetAdminRequest['operation'];
+		readonly authorization: string;
+		readonly proof: string;
+		readonly body: Uint8Array<ArrayBuffer>;
+		readonly signal?: AbortSignal;
+	}) => Promise<FleetAdminAnswer>;
+}
+
+/** One send per call; the admin routes travel the private link like every other central call. */
+export function createFleetAdminLinkClient(transport: CentralTransport): FleetAdminLinkClient {
+	async function send(props: {
+		readonly operation: FleetAdminRequest['operation'];
+		readonly authorization: string;
+		readonly proof: string;
+		readonly body: string | Uint8Array<ArrayBuffer>;
+		readonly signal?: AbortSignal;
+	}): Promise<FleetAdminAnswer> {
+		let response: Response;
+		try {
+			response = await transport.fetch(
+				new Request(`http://central.invalid${fleetAdminRoutePaths[props.operation]}`, {
+					method: 'POST',
+					headers: {
+						'content-type': 'application/json',
+						authorization: props.authorization,
+						dpop: props.proof,
+					},
+					body: props.body,
+					...(props.signal === undefined ? {} : { signal: props.signal }),
+				}),
+			);
+		} catch (error) {
+			return {
+				kind: 'unknown',
+				reason: error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'unavailable',
+			};
+		}
+		if (response.status === 401) return { kind: 'unauthenticated' };
+		if (response.status === 400) return { kind: 'request-refused' };
+		if (response.status === 503) return { kind: 'answered-unavailable' };
+		if (response.status !== 200) return { kind: 'unknown', reason: 'unavailable' };
+		let payload: unknown;
+		try {
+			payload = await response.json();
+		} catch {
+			return { kind: 'unknown', reason: 'malformed-reply' };
+		}
+		const parsed = fleetAdminResultSchemas[props.operation].safeParse(payload);
+		if (!parsed.success) return { kind: 'unknown', reason: 'malformed-reply' };
+		return { kind: 'answered', result: parsed.data };
+	}
+	return {
+		sendFleetAdminRequest: async (props) =>
+			send({
+				operation: props.operation.operation,
+				authorization: `DPoP ${props.accessToken}`,
+				proof: props.proof,
+				body: JSON.stringify(fleetAdminRequestBody(props.operation)),
+				...(props.signal === undefined ? {} : { signal: props.signal }),
+			}),
+		relayFleetAdminRequest: async (props) => send(props),
+	};
+}

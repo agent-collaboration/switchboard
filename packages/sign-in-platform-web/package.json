@@ -1,0 +1,37 @@
+{
+	"name": "@agent-collaboration/sign-in-platform-web",
+	"version": "0.0.153",
+	"description": "Web API clock, identifier and crypto adapters for sign-in hosts.",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/agent-collaboration/switchboard.git",
+		"directory": "packages/sign-in-platform-web"
+	},
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"imports": {
+		"#sign-in-platform-web/*": "./src/*.ts"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@agent-collaboration/sign-in-core": "workspace:*",
+		"jose": "6.2.12",
+		"uuid": "13.0.0",
+		"zod": "4.4.3"
+	}
+}

@@ -1,0 +1,44 @@
+{
+	"name": "@agent-collaboration/sign-in-host-node",
+	"version": "0.0.153",
+	"description": "Node HTTP host and SQLite storage for sign-in.",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/agent-collaboration/switchboard.git",
+		"directory": "packages/sign-in-host-node"
+	},
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"imports": {
+		"#sign-in-host-node/*": "./src/*.ts"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"typecheck": "tsc -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@agent-collaboration/sign-in-core": "workspace:*",
+		"@agent-collaboration/sign-in-platform-web": "workspace:*",
+		"@better-auth/core": "1.7.11",
+		"@logtape/logtape": "2.3.0",
+		"@logtape/otel": "2.3.0",
+		"better-sqlite3": "13.0.3",
+		"drizzle-orm": "0.45.2",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "9.6.0"
+	}
+}

@@ -1,0 +1,29 @@
+{
+	"caseId": "gateway-managed-agent-projection-namespace-names-code-point-reverse",
+	"schemaId": "gateway.managed-agent-projection",
+	"tags": [
+		"code-point-order",
+		"managed-agent-projection",
+		"namespace-names",
+		"rejected",
+		"reverse"
+	],
+	"input": {
+		"agentId": "agent-a",
+		"frameworkIdentity": {
+			"kind": "hermes",
+			"profileName": "agent-a"
+		},
+		"profileAssignmentRevision": "profile-assignment-a",
+		"toolPortalNamespaces": [{ "namespace": "\uD800\uDC00" }, { "namespace": "\uE000" }],
+		"toolPortalProfileId": "profile-a"
+	},
+	"expectation": {
+		"kind": "rejected",
+		"errorCodes": ["gateway.managed-agent-projection.namespaces"],
+		"refinementIdentities": [
+			"gateway.managed-agent-projection.namespaces",
+			"portal.namespace-discovery.summary-code-points"
+		]
+	}
+}

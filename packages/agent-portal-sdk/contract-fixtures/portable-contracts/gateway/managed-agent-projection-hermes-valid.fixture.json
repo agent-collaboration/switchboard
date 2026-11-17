@@ -1,0 +1,33 @@
+{
+	"caseId": "gateway-managed-agent-projection-hermes-valid",
+	"schemaId": "gateway.managed-agent-projection",
+	"tags": ["accepted", "hermes", "managed-agent-projection"],
+	"input": {
+		"agentId": "agent-b",
+		"frameworkIdentity": {
+			"kind": "hermes",
+			"profileName": "reviewer"
+		},
+		"profileAssignmentRevision": "profile-assignment-b",
+		"toolPortalNamespaces": [{ "namespace": "filesystem", "summary": "Filesystem operations" }],
+		"toolPortalProfileId": "review"
+	},
+	"expectation": {
+		"kind": "accepted",
+		"normalized": {
+			"agentId": "agent-b",
+			"frameworkIdentity": {
+				"kind": "hermes",
+				"profileName": "reviewer"
+			},
+			"profileAssignmentRevision": "profile-assignment-b",
+			"toolPortalNamespaces": [{ "namespace": "filesystem", "summary": "Filesystem operations" }],
+			"toolPortalProfileId": "review"
+		},
+		"canonicalJson": "{\"agentId\":\"agent-b\",\"frameworkIdentity\":{\"kind\":\"hermes\",\"profileName\":\"reviewer\"},\"profileAssignmentRevision\":\"profile-assignment-b\",\"toolPortalNamespaces\":[{\"namespace\":\"filesystem\",\"summary\":\"Filesystem operations\"}],\"toolPortalProfileId\":\"review\"}",
+		"refinementIdentities": [
+			"gateway.managed-agent-projection.namespaces",
+			"portal.namespace-discovery.summary-code-points"
+		]
+	}
+}

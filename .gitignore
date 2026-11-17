@@ -1,0 +1,91 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs
+dist/
+build/
+!packages/agent-vm/src/build/
+!packages/agent-vm/src/build/**
+*.egg-info/
+.eggs/
+
+# Swift
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+Package.resolved
+
+# IDE
+# Local Mindle editor sidecars (never product source)
+*.mindle.json
+.mindle/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+**/.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+.dev.vars
+system.json
+
+# Test / Coverage
+.coverage
+htmlcov/
+coverage/
+!packages/agent-portal-sdk/contract-fixtures/portable-contracts/coverage/
+!packages/agent-portal-sdk/contract-fixtures/portable-contracts/coverage/*.fixture.json
+.pytest_cache/
+.ruff_cache/
+/state/
+/runtime/
+workspaces/
+tmp/
+/tmp/
+temp/
+/temp/
+test-results/
+playwright-report/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Generated
+*.gen.ts
+__generated__/
+*.tgz
+vm-images/gateways/*/vendor/
+config/**
+
+# Secrets (never commit)
+*.pem
+*.key
+credentials.json
+
+# Gondolin image build cache
+build-cache/
+
+# Scaffold tracking
+.scaffold-project.json
+.agent-vm-smoke-cache/
+cache/
+.cache/
+*.bak
+*.tgz
+.npmrc
+!.npmrc
+.DS_Store

@@ -1,0 +1,41 @@
+{
+	"version": "7",
+	"dialect": "sqlite",
+	"entries": [
+		{
+			"idx": 0,
+			"version": "6",
+			"when": 1793451763534,
+			"tag": "0000_outstanding_nextwave",
+			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "6",
+			"when": 1793808000000,
+			"tag": "0001_organization_access",
+			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "6",
+			"when": 1793808000001,
+			"tag": "0002_second_factors",
+			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "6",
+			"when": 1794114089017,
+			"tag": "0003_authorization_revisions",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "6",
+			"when": 1794453950328,
+			"tag": "0004_organization_stamp_record",
+			"breakpoints": true
+		}
+	]
+}

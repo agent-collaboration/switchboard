@@ -1,0 +1,64 @@
+{
+	"name": "@agent-collaboration/auth-ui",
+	"version": "0.0.153",
+	"description": "Better Auth UI's shadcn sign-in components (Base UI variant), composed from tool-access-ui's primitives.",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/agent-collaboration/switchboard.git",
+		"directory": "packages/auth-ui"
+	},
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"sideEffects": [
+		"**/*.css"
+	],
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./icons": {
+			"types": "./dist/icons.d.ts",
+			"import": "./dist/icons.js"
+		},
+		"./styles.css": "./dist/auth-ui.css"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown && cp src/auth-ui.css dist/auth-ui.css",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"test": "vitest run --root ../../ --config vitest.config.ts --project unit packages/auth-ui/src"
+	},
+	"dependencies": {
+		"@agent-collaboration/tool-access-ui": "workspace:*",
+		"@better-auth-ui/core": "1.7.34",
+		"@better-auth-ui/react": "1.7.34",
+		"@tanstack/react-form": "1.33.5",
+		"@tanstack/react-query": "5.107.1",
+		"cn": "0.5.0",
+		"input-otp": "1.5.0",
+		"lucide-react": "1.59.0",
+		"sonner": "^2.0.8",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@testing-library/dom": "^10.4.1",
+		"@testing-library/react": "^16.3.2",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"jsdom": "^27.4.0",
+		"react": "19.3.1",
+		"react-dom": "19.3.1"
+	},
+	"peerDependencies": {
+		"react": "^19.3.1",
+		"react-dom": "^19.3.1"
+	}
+}

@@ -1,0 +1,378 @@
+{
+	// Pair this illustrative document with oauth-v3.config.jsonc. The two agents
+	// use complete profiles with the same commands but different defaults. Accounts
+	// remain independent; applications reference the sibling OAuth registrations.
+	"schemaVersion": 1,
+	"mode": "managed",
+	"agents": {
+		"sun": {
+			"profile": "google-read-defaults",
+		},
+		"ember": {
+			"profile": "google-ask-defaults",
+		},
+	},
+	"profiles": {
+		"google-read-defaults": {
+			"namespaces": {
+				"google": {
+					"tools": {
+						"allow": ["gog"],
+					},
+					"calls": {
+						"source": "managed_google_policy",
+					},
+					"backend": {
+						"kind": "controller_execution",
+						"operations": {
+							"gog": {
+								"kind": "configured_cli",
+								"authorization": {
+									"kind": "oauth_account",
+								},
+								"executablePath": "/usr/local/bin/gog",
+								"mandatoryArgvPrefix": [],
+								"safeHelp": "Use supported Gmail, Calendar and Contacts commands for the selected account. Describe first; account-specific Read/Write policy and owner consent still apply.",
+								"commands": [
+									{
+										"path": ["gmail", "search"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "get"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "list"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "get"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "create"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "send"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "delete"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "send"],
+										"flagRules": [],
+									},
+									{
+										"path": ["calendar", "events"],
+										"flagRules": [],
+									},
+									{
+										"path": ["calendar", "create"],
+										"flagRules": [],
+									},
+									{
+										"path": ["calendar", "delete"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "list"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "search"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "create"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "delete"],
+										"flagRules": [],
+									},
+								],
+								"calls": {
+									"source": "managed_google_policy",
+									"deny": [],
+								},
+								"stdin": {
+									"kind": "none",
+								},
+								"timeout": {
+									"kind": "quick",
+								},
+								"output": {
+									"modelVisibleStderr": "fixed_safe_summary",
+									"overflow": "truncate",
+									"stdoutMaxBytes": 4096,
+									"stderrMaxBytes": 1024,
+								},
+								"executionTarget": {
+									"kind": "ephemeral_managed_vm",
+									"imageReference": "vm-images/google",
+									"guestCwd": "/work",
+									"environment": {
+										"kind": "empty",
+									},
+									"allowedHosts": [
+										"gmail.googleapis.com",
+										"people.googleapis.com",
+										"www.googleapis.com",
+									],
+									"credentialProjection": {
+										"kind": "http_mediation",
+										"environment": {
+											"GOG_ACCESS_TOKEN": {
+												"kind": "oauth_access_token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"oauth_authorization": {
+					"tools": {
+						"allow": ["list", "begin", "status", "cancel", "reauthorize", "disconnect"],
+					},
+					"calls": {
+						"requiresApproval": {
+							"allow": [],
+						},
+						"withoutApproval": {
+							"allow": ["list", "begin", "status", "cancel", "reauthorize", "disconnect"],
+						},
+					},
+					"backend": {
+						"kind": "controller_execution",
+						"operations": {
+							"list": {
+								"kind": "registered_action",
+							},
+							"begin": {
+								"kind": "registered_action",
+							},
+							"status": {
+								"kind": "registered_action",
+							},
+							"cancel": {
+								"kind": "registered_action",
+							},
+							"reauthorize": {
+								"kind": "registered_action",
+							},
+							"disconnect": {
+								"kind": "registered_action",
+							},
+						},
+					},
+				},
+			},
+			"oauthApplications": {
+				"gmail-app": {
+					"ceiling": {
+						"kind": "catalog-preset",
+						"presetId": "all-supported",
+					},
+					"consentRecommendation": {
+						"kind": "collection",
+						"collectionId": "read-only-assistant",
+						"version": "1",
+					},
+					"policyDefaults": {
+						"kind": "collection",
+						"collectionId": "read-only-assistant",
+						"version": "1",
+					},
+				},
+			},
+		},
+		"google-ask-defaults": {
+			"namespaces": {
+				"google": {
+					"tools": {
+						"allow": ["gog"],
+					},
+					"calls": {
+						"source": "managed_google_policy",
+					},
+					"backend": {
+						"kind": "controller_execution",
+						"operations": {
+							"gog": {
+								"kind": "configured_cli",
+								"authorization": {
+									"kind": "oauth_account",
+								},
+								"executablePath": "/usr/local/bin/gog",
+								"mandatoryArgvPrefix": [],
+								"safeHelp": "Use supported Gmail, Calendar and Contacts commands for the selected account. Describe first; account-specific Read/Write policy and owner consent still apply.",
+								"commands": [
+									{
+										"path": ["gmail", "search"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "get"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "list"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "get"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "create"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "send"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "drafts", "delete"],
+										"flagRules": [],
+									},
+									{
+										"path": ["gmail", "send"],
+										"flagRules": [],
+									},
+									{
+										"path": ["calendar", "events"],
+										"flagRules": [],
+									},
+									{
+										"path": ["calendar", "create"],
+										"flagRules": [],
+									},
+									{
+										"path": ["calendar", "delete"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "list"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "search"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "create"],
+										"flagRules": [],
+									},
+									{
+										"path": ["contacts", "delete"],
+										"flagRules": [],
+									},
+								],
+								"calls": {
+									"source": "managed_google_policy",
+									"deny": [],
+								},
+								"stdin": {
+									"kind": "none",
+								},
+								"timeout": {
+									"kind": "quick",
+								},
+								"output": {
+									"modelVisibleStderr": "fixed_safe_summary",
+									"overflow": "truncate",
+									"stdoutMaxBytes": 4096,
+									"stderrMaxBytes": 1024,
+								},
+								"executionTarget": {
+									"kind": "ephemeral_managed_vm",
+									"imageReference": "vm-images/google",
+									"guestCwd": "/work",
+									"environment": {
+										"kind": "empty",
+									},
+									"allowedHosts": [
+										"gmail.googleapis.com",
+										"people.googleapis.com",
+										"www.googleapis.com",
+									],
+									"credentialProjection": {
+										"kind": "http_mediation",
+										"environment": {
+											"GOG_ACCESS_TOKEN": {
+												"kind": "oauth_access_token",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"oauth_authorization": {
+					"tools": {
+						"allow": ["list", "begin", "status", "cancel", "reauthorize", "disconnect"],
+					},
+					"calls": {
+						"requiresApproval": {
+							"allow": [],
+						},
+						"withoutApproval": {
+							"allow": ["list", "begin", "status", "cancel", "reauthorize", "disconnect"],
+						},
+					},
+					"backend": {
+						"kind": "controller_execution",
+						"operations": {
+							"list": {
+								"kind": "registered_action",
+							},
+							"begin": {
+								"kind": "registered_action",
+							},
+							"status": {
+								"kind": "registered_action",
+							},
+							"cancel": {
+								"kind": "registered_action",
+							},
+							"reauthorize": {
+								"kind": "registered_action",
+							},
+							"disconnect": {
+								"kind": "registered_action",
+							},
+						},
+					},
+				},
+			},
+			"oauthApplications": {
+				"gmail-app": {
+					"ceiling": {
+						"kind": "catalog-preset",
+						"presetId": "all-supported",
+					},
+					"consentRecommendation": {
+						"kind": "explicit",
+						"groupIds": ["gmail.read"],
+					},
+					"policyDefaults": {
+						"kind": "explicit",
+						"services": {
+							"gmail": {
+								"read": "ask",
+								"write": "deny",
+							},
+						},
+					},
+				},
+			},
+		},
+	},
+}

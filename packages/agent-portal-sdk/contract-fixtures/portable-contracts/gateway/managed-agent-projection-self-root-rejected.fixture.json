@@ -1,0 +1,24 @@
+{
+	"caseId": "gateway-managed-agent-projection-self-root-rejected",
+	"schemaId": "gateway.managed-agent-projection",
+	"tags": ["managed-agent-projection", "rejected", "unknown-field"],
+	"input": {
+		"agentId": "agent-a",
+		"frameworkIdentity": {
+			"kind": "hermes",
+			"profileName": "agent-a"
+		},
+		"profileAssignmentRevision": "profile-assignment-a",
+		"selfRoot": "/zone/agents/agent-a/self",
+		"toolPortalNamespaces": [],
+		"toolPortalProfileId": "engineering"
+	},
+	"expectation": {
+		"kind": "rejected",
+		"errorCodes": ["portable.object.unknown-field"],
+		"refinementIdentities": [
+			"gateway.managed-agent-projection.namespaces",
+			"portal.namespace-discovery.summary-code-points"
+		]
+	}
+}

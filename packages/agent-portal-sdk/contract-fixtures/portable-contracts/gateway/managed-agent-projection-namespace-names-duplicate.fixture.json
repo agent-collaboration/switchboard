@@ -1,0 +1,23 @@
+{
+	"caseId": "gateway-managed-agent-projection-namespace-names-duplicate",
+	"schemaId": "gateway.managed-agent-projection",
+	"tags": ["duplicate", "managed-agent-projection", "namespace-names", "rejected"],
+	"input": {
+		"agentId": "agent-a",
+		"frameworkIdentity": {
+			"kind": "hermes",
+			"profileName": "agent-a"
+		},
+		"profileAssignmentRevision": "profile-assignment-a",
+		"toolPortalNamespaces": [{ "namespace": "filesystem" }, { "namespace": "filesystem" }],
+		"toolPortalProfileId": "engineering"
+	},
+	"expectation": {
+		"kind": "rejected",
+		"errorCodes": ["gateway.managed-agent-projection.namespaces"],
+		"refinementIdentities": [
+			"gateway.managed-agent-projection.namespaces",
+			"portal.namespace-discovery.summary-code-points"
+		]
+	}
+}

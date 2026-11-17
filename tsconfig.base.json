@@ -1,0 +1,102 @@
+{
+	"compilerOptions": {
+		"target": "ES2024",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"lib": ["ES2024"],
+		"strict": true,
+		"noImplicitAny": true,
+		"strictNullChecks": true,
+		"strictFunctionTypes": true,
+		"strictBindCallApply": true,
+		"strictPropertyInitialization": true,
+		"noImplicitThis": true,
+		"useUnknownInCatchVariables": true,
+		"alwaysStrict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"exactOptionalPropertyTypes": true,
+		"noImplicitReturns": true,
+		"noFallthroughCasesInSwitch": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noPropertyAccessFromIndexSignature": false,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"skipLibCheck": true,
+		"types": ["node"],
+		"paths": {
+			"@agent-collaboration/tool-host-core": ["./packages/tool-host-core/src/index.ts"],
+			"@agent-collaboration/config-contracts-test-support/*": ["./packages/config-contracts/src/*"],
+			"@agent-collaboration/tool-engine/capability-dispatch": [
+				"./packages/tool-engine/src/capability-dispatch/index.ts"
+			],
+			"@agent-collaboration/tool-engine/standalone-tool-portal": [
+				"./packages/tool-engine/src/standalone-tool-portal/index.ts"
+			],
+			"@agent-collaboration/tool-access/contracts": [
+				"./packages/tool-access/src/contracts/index.ts"
+			],
+			"@agent-collaboration/tool-access/authorization": [
+				"./packages/tool-access/src/authorization/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk": ["./packages/agent-portal-sdk/src/index.ts"],
+			"@agent-collaboration/agent-portal-sdk/generated-tools": [
+				"./packages/agent-portal-sdk/src/generated-tools/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/gateway-runtime-client": [
+				"./packages/agent-portal-sdk/src/gateway-runtime-client/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/tool-portal-mcp-client": [
+				"./packages/agent-portal-sdk/src/tool-portal-mcp-client/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/adapter-boundary": [
+				"./packages/agent-portal-sdk/src/adapter-boundary/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/approval-surface": [
+				"./packages/agent-portal-sdk/src/approval-surface/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/artifact-surface": [
+				"./packages/agent-portal-sdk/src/artifact-surface/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/capability-description-surface": [
+				"./packages/agent-portal-sdk/src/capability-description-surface/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/portal-call-surface": [
+				"./packages/agent-portal-sdk/src/portal-call-surface/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/portal-event-surface": [
+				"./packages/agent-portal-sdk/src/portal-event-surface/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/portable-contracts": [
+				"./packages/agent-portal-sdk/src/portable-contracts/index.ts"
+			],
+			"@agent-collaboration/agent-portal-sdk/testing": [
+				"./packages/agent-portal-sdk/src/testing/index.ts"
+			],
+			"@agent-collaboration/config-contracts": ["./packages/config-contracts/src/index.ts"],
+			"@agent-collaboration/tool-engine/mcp-gateway": [
+				"./packages/tool-engine/src/mcp-gateway/index.ts"
+			],
+			"@agent-collaboration/tool-engine/upstream-mcp-connectors": [
+				"./packages/tool-engine/src/upstream-mcp-connectors/index.ts"
+			],
+			"@agent-collaboration/sign-in-core": ["./packages/sign-in-core/src/index.ts"],
+			"@agent-collaboration/sign-in-platform-web": ["./packages/sign-in-platform-web/src/index.ts"],
+			"@agent-collaboration/sign-in-owner-cli": ["./packages/sign-in-owner-cli/src/index.ts"],
+			"@agent-collaboration/sign-in-host-cloudflare": [
+				"./packages/sign-in-host-cloudflare/src/index.ts"
+			],
+			"@agent-collaboration/sign-in-test-support": ["./packages/sign-in-test-support/src/index.ts"],
+			"@agent-collaboration/oauth-broker-contracts": [
+				"./packages/oauth-broker-contracts/src/index.ts"
+			],
+			"@agent-collaboration/sign-in-core/better-auth": [
+				"./packages/sign-in-core/src/better-auth/index.ts"
+			],
+			"@agent-collaboration/sign-in-host-cloudflare/configuration": [
+				"./packages/sign-in-host-cloudflare/src/worker-configuration.ts"
+			]
+		}
+	}
+}
