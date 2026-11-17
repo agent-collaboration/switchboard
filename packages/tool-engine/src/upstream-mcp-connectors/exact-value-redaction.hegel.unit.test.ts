@@ -1,6 +1,6 @@
 import * as hegel from '@hegeldev/hegel';
 import * as generators from '@hegeldev/hegel/generators';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 
 import {
 	redactCredentialText,
@@ -74,7 +74,7 @@ it('redacts the minimal shorter-header-before-longer-credential example', () => 
 it('redacts the union of substring, partial-overlap and adjacent secret occurrences in any order', () => {
 	hegel.test((tc) => {
 		const block = generators.text({
-			alphabet: 'abcdefghijklmnopqrstuvwxyz0123456789_-.é雪',
+			alphabet: 'abcdefghijklmnopqrstuvwxyz0123456789_-.é雪🔐🪐',
 			minSize: 4,
 			maxSize: 16,
 		});
@@ -114,7 +114,7 @@ it('matches independent character coverage for generated multi-value occurrence 
 	hegel.test((tc) => {
 		const text = tc.draw(
 			generators.text({
-				alphabet: 'abcdefghijklmnopqrstuvwxyz0123456789_-.é雪',
+				alphabet: 'abcdefghijklmnopqrstuvwxyz0123456789_-.é雪🔐🪐',
 				minSize: 8,
 				maxSize: 96,
 			}),
@@ -162,4 +162,67 @@ it('preserves complete pattern redaction when an exact value overlaps part of th
 	]) {
 		expect(redactCredentialText(input.text, { exactValues: input.values })).toBe(marker);
 	}
+});
+
+it('unions generated credential patterns and exact overlaps with astral text', () => {
+	hegel.test((tc) => {
+		const ordinary = generators.text({
+			alphabet: 'abcdefghijklmnopqrstuvwxyz0123456789_-.é雪🔐🪐',
+			minSize: 4,
+			maxSize: 16,
+		});
+		const credential = tc.draw(
+			generators.text({
+				alphabet: 'abcdefghijklmnopqrstuvwxyz0123456789_-.',
+				minSize: 8,
+				maxSize: 32,
+			}),
+		);
+		const prefix = `🔐${tc.draw(ordinary)} `;
+		const suffix = ` ${tc.draw(ordinary)}🪐`;
+		const split = tc.draw(generators.integers({ minValue: 1, maxValue: credential.length - 1 }));
+		// Each template is a known pattern match, independent of the product's regexes.
+		for (const scheme of ['Bearer ', 'Basic ', 'api_key=', 'token=', 'password=', 'secret=']) {
+			const pattern = `${scheme}${credential}`;
+			const input = `PUBLIC<${prefix}${pattern}${suffix}>END`;
+			const valueSets = [
+				[`${prefix}${scheme}${credential.slice(0, split)}`],
+				[`${credential.slice(split)}${suffix}`],
+				[`${prefix}${scheme}${credential.slice(0, split)}`, `${credential.slice(split)}${suffix}`],
+			];
+			for (const values of valueSets) {
+				const expected = coveredText(input, [...values, pattern]);
+				tc.note(JSON.stringify({ input, values, pattern }));
+				for (const exactValues of [values, values.toReversed()]) {
+					const actual = redactCredentialText(input, { exactValues });
+					expect(actual).toBe(expected.redacted);
+					assertNoNewSecretFragments({ actual, values, outsideSecrets: expected.outsideSecrets });
+					expect(redactUpstreamResponse({ nested: [input] }, { exactValues })).toEqual({
+						nested: [expected.redacted],
+					});
+				}
+				// Catalog redaction remains exact-only even for pattern-shaped input.
+				expect(redactUpstreamCatalogValue({ nested: [input] }, { exactValues: values })).toEqual({
+					nested: [coveredText(input, values).redacted],
+				});
+			}
+		}
+	}, settings);
+});
+
+it('bounds buffered spans by contiguous runs for large repeated short header values', () => {
+	const run = '2'.repeat(256 * 1024);
+	const input = `PUBLIC<${run}>between<${run}>END`;
+	const sorting = vi.spyOn(Array.prototype, 'sort');
+	let bufferedSpanCounts: number[] = [];
+	let actual = '';
+	try {
+		actual = redactExactCredentialText(input, { exactValues: ['2', '22', '2222'] });
+		// Observe the actual collection entering the cross-value merge, without a public test API.
+		bufferedSpanCounts = sorting.mock.contexts.map((spans) => spans.length);
+	} finally {
+		sorting.mockRestore();
+	}
+	expect(actual).toBe(`PUBLIC<${marker}>between<${marker}>END`);
+	expect(bufferedSpanCounts).toEqual([6]);
 });

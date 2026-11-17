@@ -37,8 +37,15 @@ function redactCredentialSpans(
 	for (const value of new Set(exactValues)) {
 		if (value.length === 0) continue;
 		let start = text.indexOf(value);
+		let current: RedactionSpan | undefined;
 		while (start !== -1) {
-			occurrences.push({ start, end: start + value.length });
+			const end = start + value.length;
+			// One value's matches are ordered; retain one span per contiguous run.
+			if (current !== undefined && start <= current.end) current.end = end;
+			else {
+				current = { start, end };
+				occurrences.push(current);
+			}
 			// Advance one code unit so repeated occurrences can overlap themselves.
 			start = text.indexOf(value, start + 1);
 		}
