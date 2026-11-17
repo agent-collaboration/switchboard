@@ -13,12 +13,28 @@ import {
 	installOrganizationBrowserCookie,
 	organizationBrowserCookie,
 	organizationDomReady,
+	observeOrganizationEnterGesture,
 	pressOrganizationBrowserKey,
 	tabToOrganizationControl,
 } from '#sign-in-test-support/test-fixtures/organization-browser-transport';
 
 const switchPath = '/api/auth/organization/set-active';
 const continueButton = '#owner-sign-in button';
+
+function recordChooserPhase(
+	phase:
+		| 'first-gesture'
+		| 'first-release'
+		| 'first-dom-ready'
+		| 'second-choice-click'
+		| 'second-response'
+		| 'continue',
+	state: 'started' | 'completed' | 'waiting-for-response' | 'received',
+): void {
+	process.stdout.write(
+		`${JSON.stringify({ event: 'organization-chooser-phase', phase, state })}\n`,
+	);
+}
 
 async function currentSession(context: OrganizationBrowserScenario): Promise<{
 	readonly id: string;
@@ -47,16 +63,23 @@ async function currentSession(context: OrganizationBrowserScenario): Promise<{
 async function chooseOrganization(
 	context: OrganizationBrowserScenario,
 	organizationId: string,
+	tracePhase?: 'second-choice',
 ): Promise<void> {
 	await organizationDomReady(
 		context.page,
 		`!!document.querySelector('[data-sign-in-island-mounted] #choose-organization')`,
 	);
 	const response = await context.page.responseTo(switchPath, async (): Promise<void> =>
-		context.page.afterNavigation('/owner-ready', async (): Promise<void> =>
-			context.page.click(`#choose-organization button[value="${organizationId}"]`),
-		),
+		context.page.afterNavigation('/owner-ready', async (): Promise<void> => {
+			if (tracePhase === 'second-choice') recordChooserPhase('second-choice-click', 'started');
+			await context.page.click(`#choose-organization button[value="${organizationId}"]`);
+			if (tracePhase === 'second-choice') {
+				recordChooserPhase('second-choice-click', 'completed');
+				recordChooserPhase('second-response', 'waiting-for-response');
+			}
+		}),
 	);
+	if (tracePhase === 'second-choice') recordChooserPhase('second-response', 'received');
 	expect(response.response.status).toBe(200);
 	await organizationDomReady(
 		context.page,
@@ -136,15 +159,53 @@ export async function exerciseOrganizationChooser(
 				selector: `#choose-organization button[aria-label="Choose ${context.firstOrganizationName}"]`,
 			});
 			const firstReply = await page.responseTo(switchPath, async (): Promise<void> =>
-				page.afterNavigation('/owner-ready', async (): Promise<void> =>
-					pressOrganizationBrowserKey(protocol, 'Enter'),
-				),
+				page.afterNavigation('/owner-ready', async (): Promise<void> => {
+					const heldResponse = responses.arm((url): boolean => url.pathname === switchPath);
+					void heldResponse.catch(() => undefined);
+					recordChooserPhase('first-gesture', 'started');
+					const observation = await observeOrganizationEnterGesture({
+						page,
+						buttonSelector: `#choose-organization button[value="${context.firstOrganizationId}"]`,
+						formSelector: '#choose-organization',
+						pressEnter: (): Promise<void> => pressOrganizationBrowserKey(protocol, 'Enter'),
+					});
+					recordChooserPhase('first-gesture', 'completed');
+					process.stdout.write(
+						`${JSON.stringify({ event: 'organization-chooser-enter-gesture', observation })}\n`,
+					);
+					// Check the completed gesture before awaiting a request that might not exist.
+					expect(
+						observation.events.some(
+							(event) => event.kind === 'submit' && event.expectedButton && event.expectedForm,
+						),
+					).toBe(true);
+					expect(observation.events.map((event) => event.kind)).toEqual([
+						'keydown',
+						'keypress',
+						'click',
+						'submit',
+						'keyup',
+					]);
+					expect(
+						observation.events
+							.filter((event) => event.kind !== 'keyup')
+							.every((event) => event.expectedButton && event.expectedForm),
+					).toBe(true);
+					// A valid submit disables the chooser; keyup and focus may then move to body.
+					recordChooserPhase('first-release', 'waiting-for-response');
+					const firstHeldResponse = await heldResponse;
+					recordChooserPhase('first-release', 'started');
+					await responses.releaseForNavigation(firstHeldResponse);
+					recordChooserPhase('first-release', 'completed');
+				}),
 			);
 			expect(firstReply.response.status).toBe(200);
+			recordChooserPhase('first-dom-ready', 'started');
 			await organizationDomReady(
 				page,
 				`!!document.querySelector('#choose-organization button[value="${context.secondOrganizationId}"]') && document.querySelector('h1')?.textContent!=='Choose your organization'`,
 			);
+			recordChooserPhase('first-dom-ready', 'completed');
 			expect((await currentSession(context)).activeOrganizationId).toBe(
 				context.firstOrganizationId,
 			);
@@ -160,7 +221,7 @@ export async function exerciseOrganizationChooser(
 					z.boolean(),
 				),
 			).toBe(true);
-			await chooseOrganization(context, context.secondOrganizationId);
+			await chooseOrganization(context, context.secondOrganizationId, 'second-choice');
 			expect((await currentSession(context)).id).toBe(fresh.id);
 			expect(
 				await page.evaluate(
@@ -169,7 +230,9 @@ export async function exerciseOrganizationChooser(
 				),
 			).toBe(true);
 			await context.capture('chooser-second-choice');
+			recordChooserPhase('continue', 'started');
 			await page.afterNavigation(undefined, async (): Promise<void> => page.click(continueButton));
+			recordChooserPhase('continue', 'completed');
 			// Chrome follows the actual served Continue destination; no saved authorization URL is replayed.
 			const callback = await page.evaluate('location.href', z.url());
 			expect(new URL(callback).hostname).toBe('127.0.0.1');

@@ -22,6 +22,14 @@ const pageTargetsSchema = z.array(
 	z.object({ id: z.string(), webSocketDebuggerUrl: z.string().optional() }),
 );
 
+interface RetainedProtocolEvent {
+	readonly sequence: number;
+	readonly parameters: unknown;
+}
+const networkTerminalMethods = ['Network.loadingFinished', 'Network.loadingFailed'] as const;
+export type NetworkTerminalMethod = (typeof networkTerminalMethods)[number];
+const networkRequestIdentitySchema = z.object({ requestId: z.string() });
+
 interface PendingCall {
 	readonly method: string;
 	readonly resolve: (value: unknown) => void;
@@ -39,7 +47,8 @@ export class ChromeProtocol {
 	/** Event waiters reject with pending calls when the connection ends. */
 	private readonly waiters = new Set<(reason: Error) => void>();
 	private readonly listeners = new Map<string, Set<(parameters: unknown) => void>>();
-	private readonly history = new Map<string, unknown[]>();
+	private readonly history = new Map<string, RetainedProtocolEvent[]>();
+	private nextEventSequence = 0;
 	/** Set once the socket closed or failed: later calls and waits reject at once. */
 	private ended: Error | null = null;
 
@@ -62,10 +71,11 @@ export class ChromeProtocol {
 							'Page.frameNavigated',
 							'Target.targetCreated',
 							'Network.loadingFinished',
+							'Network.loadingFailed',
 						].includes(message.method)
 					) {
 						const history = this.history.get(message.method) ?? [];
-						history.push(message.params);
+						history.push({ sequence: ++this.nextEventSequence, parameters: message.params });
 						if (history.length > 100) history.shift();
 						this.history.set(message.method, history);
 					}
@@ -129,8 +139,8 @@ export class ChromeProtocol {
 	}
 
 	async waitFor(method: string, predicate: (parameters: unknown) => boolean): Promise<unknown> {
-		const recorded = this.history.get(method)?.find(predicate);
-		if (recorded !== undefined) return recorded;
+		const recorded = this.history.get(method)?.find((event) => predicate(event.parameters));
+		if (recorded !== undefined) return recorded.parameters;
 		if (this.ended !== null) throw this.ended;
 		return new Promise<unknown>((resolve, reject): void => {
 			const unsubscribe = this.on(method, (parameters): void => {
@@ -145,6 +155,54 @@ export class ChromeProtocol {
 			};
 			this.waiters.add(rejectWaiter);
 		});
+	}
+
+	/** The first matching terminal owns completion; cancellation or socket close removes both listeners. */
+	waitForNetworkTerminal(requestId: string): {
+		readonly completed: Promise<NetworkTerminalMethod>;
+		readonly cancel: () => void;
+	} {
+		const matches = (parameters: unknown): boolean =>
+			networkRequestIdentitySchema.safeParse(parameters).data?.requestId === requestId;
+		const recorded = networkTerminalMethods
+			.flatMap((method) =>
+				(this.history.get(method) ?? [])
+					.filter((event) => matches(event.parameters))
+					.map((event) => ({ method, sequence: event.sequence })),
+			)
+			.toSorted((left, right) => left.sequence - right.sequence)[0];
+		if (recorded !== undefined)
+			return { completed: Promise.resolve(recorded.method), cancel: (): void => {} };
+		if (this.ended !== null)
+			return { completed: Promise.reject(this.ended), cancel: (): void => {} };
+		const result = Promise.withResolvers<NetworkTerminalMethod>();
+		const unsubscribe: (() => void)[] = [];
+		let pending = true;
+		const cleanup = (): void => {
+			for (const remove of unsubscribe) remove();
+			this.waiters.delete(rejectWaiter);
+		};
+		const rejectWaiter = (reason: Error): void => {
+			if (!pending) return;
+			pending = false;
+			cleanup();
+			result.reject(reason);
+		};
+		for (const method of networkTerminalMethods) {
+			unsubscribe.push(
+				this.on(method, (parameters): void => {
+					if (!pending || !matches(parameters)) return;
+					pending = false;
+					cleanup();
+					result.resolve(method);
+				}),
+			);
+		}
+		this.waiters.add(rejectWaiter);
+		return {
+			completed: result.promise,
+			cancel: (): void => rejectWaiter(new Error('Network terminal wait cancelled')),
+		};
 	}
 
 	disconnect(): void {
