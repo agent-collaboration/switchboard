@@ -562,6 +562,9 @@ importers:
       '@agent-vm/gateway-control-contracts':
         specifier: npm:@agent-vm/gateway-control-contracts@0.0.153
         version: 0.0.153
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)

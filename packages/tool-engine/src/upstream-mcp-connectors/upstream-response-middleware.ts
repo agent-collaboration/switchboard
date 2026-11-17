@@ -23,22 +23,56 @@ export function isCredentialConfigKey(key: string): boolean {
 	);
 }
 
-function redactExactValues(text: string, exactValues: readonly string[]): string {
-	return exactValues
-		.filter((value) => value.length > 0)
-		.reduce((currentText, value) => currentText.split(value).join('[REDACTED]'), text);
+interface RedactionSpan {
+	readonly start: number;
+	end: number;
+}
+
+function redactCredentialSpans(
+	text: string,
+	exactValues: readonly string[],
+	patterns: readonly RegExp[],
+): string {
+	const occurrences: RedactionSpan[] = [];
+	for (const value of new Set(exactValues)) {
+		if (value.length === 0) continue;
+		let start = text.indexOf(value);
+		while (start !== -1) {
+			occurrences.push({ start, end: start + value.length });
+			// Advance one code unit so repeated occurrences can overlap themselves.
+			start = text.indexOf(value, start + 1);
+		}
+	}
+	// Find every match in the original text: replacing one match first can split another.
+	for (const pattern of patterns) {
+		for (const match of text.matchAll(pattern)) {
+			occurrences.push({ start: match.index, end: match.index + match[0].length });
+		}
+	}
+	occurrences.sort((left, right) => left.start - right.start || right.end - left.end);
+	const merged: RedactionSpan[] = [];
+	for (const occurrence of occurrences) {
+		const previous = merged.at(-1);
+		if (previous !== undefined && occurrence.start <= previous.end)
+			previous.end = Math.max(previous.end, occurrence.end);
+		else merged.push({ ...occurrence });
+	}
+	const fragments: string[] = [];
+	let cursor = 0;
+	for (const span of merged) {
+		fragments.push(text.slice(cursor, span.start), '[REDACTED]');
+		cursor = span.end;
+	}
+	fragments.push(text.slice(cursor));
+	return fragments.join('');
 }
 
 export function redactExactCredentialText(text: string, options: RedactionOptions = {}): string {
-	return redactExactValues(text, options.exactValues ?? []);
+	return redactCredentialSpans(text, options.exactValues ?? [], []);
 }
 
 export function redactCredentialText(text: string, options: RedactionOptions = {}): string {
-	const patternRedactedText = credentialPatterns.reduce(
-		(current, pattern) => current.replace(pattern, '[REDACTED]'),
-		text,
-	);
-	return redactExactValues(patternRedactedText, options.exactValues ?? []);
+	return redactCredentialSpans(text, options.exactValues ?? [], credentialPatterns);
 }
 
 function redactJsonValue(value: unknown, options: RedactionOptions, keyHint?: string): unknown {
