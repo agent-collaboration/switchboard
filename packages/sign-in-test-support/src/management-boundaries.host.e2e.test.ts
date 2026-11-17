@@ -245,9 +245,14 @@ it('agent: every management boundary refuses real E10 and signed management no-s
 		'/api/auth/.well-known/oauth-authorization-server',
 		'/api/auth/.well-known/openid-configuration',
 	]);
-	// Owner decision (12 Nov): the sign-in pages read these cookie-bound; only GET opens,
-	// so every other method on them stays in the refusal matrix below.
-	const publicProviderReads = new Set(['GET /api/auth/get-session', 'GET /api/auth/list-accounts']);
+	const publicProviderMethods = new Set([
+		// Owner decision (12 Nov): these cookie-bound page reads open only GET.
+		'GET /api/auth/get-session',
+		'GET /api/auth/list-accounts',
+		// S1 opens exactly these passkey methods; every other method remains in the refusal matrix.
+		'GET /api/auth/passkey/generate-authenticate-options',
+		'POST /api/auth/passkey/verify-authentication',
+	]);
 	const { httpRoutes: installedRoutes, noHttpPathApis } = await installedProviderEndpointInventory(
 		harness.miniflare,
 		harness.providerConfiguration,
@@ -299,7 +304,7 @@ it('agent: every management boundary refuses real E10 and signed management no-s
 		.filter(
 			(route) =>
 				!publicProviderPaths.has(route.path) &&
-				!publicProviderReads.has(`${route.method} ${route.path}`),
+				!publicProviderMethods.has(`${route.method} ${route.path}`),
 		);
 	const cookieSnapshot = harness.cookie();
 	const centralArrivalsBeforeAttacks = [...harness.centralProvisioning.arrivals];

@@ -269,19 +269,28 @@ test('turnstile: a real refused siteverify connection fails closed without a tim
 	}
 });
 
-test('turnstile: token, bootstrap and both closed public passkey routes do not ask for captcha', async () => {
+test('turnstile: token, bootstrap and unoffered passkey operations do not ask for captcha', async () => {
 	const harness = await startLocalAuthHarness();
 	try {
 		await clearCaptchaState(harness);
 		const before = await readCaptchaState(harness);
-		const challenge = await harness.auth('/api/auth/passkey/generate-authenticate-options');
-		const verification = await harness.auth('/api/auth/passkey/verify-authentication', {
+		const wrongChallengeMethod = await harness.auth(
+			'/api/auth/passkey/generate-authenticate-options',
+			{
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: '{}',
+			},
+		);
+		const wrongVerificationMethod = await harness.auth('/api/auth/passkey/verify-authentication');
+		const unofferedDeletion = await harness.auth('/api/auth/passkey/delete-passkey', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: '{}',
+			body: JSON.stringify({ id: 'unoffered-passkey' }),
 		});
-		expect(challenge.status).toBe(404);
-		expect(verification.status).toBe(404);
+		expect(wrongChallengeMethod.status).toBe(404);
+		expect(wrongVerificationMethod.status).toBe(404);
+		expect(unofferedDeletion.status).toBe(404);
 		expect(await readCaptchaState(harness)).toEqual(before);
 		const token = await harness.auth('/api/auth/oauth2/token', {
 			method: 'POST',

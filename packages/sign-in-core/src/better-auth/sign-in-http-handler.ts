@@ -26,6 +26,7 @@ import {
 	createOrganizationFleetCallRunner,
 } from '#sign-in-core/better-auth/organization-fleet-call-guard';
 import { bootstrapOwnerClient } from '#sign-in-core/better-auth/owner-client-bootstrap';
+import { completePasskeySignIn } from '#sign-in-core/better-auth/passkey-sign-in-completion';
 import {
 	createSignInProvider,
 	type SignInProviderProps,
@@ -405,6 +406,13 @@ export function createSignInHttpHandler(
 					await configuration.store.bootstrap.recordSignIn({ actor, outcome, method }),
 				);
 			}
+			if (url.pathname === '/api/auth/passkey/verify-authentication')
+				await completePasskeySignIn({
+					response,
+					issuedSessions: state.issuedSessions,
+					recordSignIn: async (record) =>
+						requireStoredValue(await configuration.store.bootstrap.recordSignIn(record)),
+				});
 			return await renderFactorFormResponse({
 				request,
 				response,

@@ -161,16 +161,16 @@ async function firstLimitedPage(props: {
 	return firstLimitedPage({ harness: props.harness, attempt: attempt + 1 });
 }
 
-it('people: the service own page reaches the real outer counter (Miniflare binding, Node counter) without a write, and another address still passes', async () => {
+it('people: the service page controlled window refuses exactly request 301 without a write, and another address still passes', async () => {
 	const harness = await startLocalAuthHarness({ turnstileSecret: 'published-test' });
 	try {
 		await readyForLimitProof(harness);
+		await harness.useControlledServicePageWindow();
 		const before = await allSignInRowFingerprints(harness);
 		const limited = await firstLimitedPage({ harness });
 		expectRetryAfter(limited.response);
 		expect(limited.attempt).toBe(301);
-		// Real Node counting and Miniflare's real binding. The hosted vendor's
-		// reset and cross-location counting are checked on the private stack.
+		// Cloudflare substitutes only this counter; HTTP, adapter and address keying remain real.
 		expect(await allSignInRowFingerprints(harness)).toEqual(before);
 		expect(await harness.captchaObservations()).toContainEqual({
 			kind: 'request-limited',
@@ -183,6 +183,29 @@ it('people: the service own page reaches the real outer counter (Miniflare bindi
 		await harness.close();
 	}
 });
+
+it.runIf((process.env.SIGN_IN_TEST_HOST ?? 'cloudflare') === 'cloudflare')(
+	'people: the service page real Miniflare binding refuses within 601 requests without a write, and another address still passes',
+	async () => {
+		const harness = await startLocalAuthHarness({ turnstileSecret: 'published-test' });
+		try {
+			await readyForLimitProof(harness);
+			const before = await allSignInRowFingerprints(harness);
+			const limited = await firstLimitedPage({ harness });
+			expect(limited.attempt).toBeLessThanOrEqual(601);
+			expectRetryAfter(limited.response);
+			expect(await allSignInRowFingerprints(harness)).toEqual(before);
+			expect(await harness.captchaObservations()).toContainEqual({
+				kind: 'request-limited',
+				requestClass: 'service-page',
+				layer: 'outer',
+			});
+			expect((await harness.authAsBrowser('second-address', '/owner-ready')).status).toBe(200);
+		} finally {
+			await harness.close();
+		}
+	},
+);
 
 it('people: five failed recovery codes reach native verification and the sixth is limited without another intent or stamp', async () => {
 	const harness = await startLocalAuthHarness();
@@ -286,6 +309,42 @@ it('people: the token endpoint counts refused clients and limits the thirty-firs
 		const nextWindow = await attempt();
 		expect(nextWindow.status === 400 || nextWindow.status === 401).toBe(true);
 		expect(await allSignInRowFingerprints(harness)).toEqual(before);
+	} finally {
+		await harness.close();
+	}
+});
+
+it('people: passkey challenge requests hit the tenth-request budget and a second address still passes', async () => {
+	const harness = await startLocalAuthHarness();
+	try {
+		await readyForLimitProof(harness);
+		const init = (): RequestInit => ({
+			headers: {
+				'x-captcha-response': harness.turnstile.issueToken({
+					action: 'passkey_sign_in',
+					hostname: new URL(harness.issuer).hostname,
+					verdict: 'accepted',
+				}),
+			},
+		});
+		for (let attempt = 0; attempt < 10; attempt += 1)
+			expect(
+				(await harness.auth('/api/auth/passkey/generate-authenticate-options', init())).status,
+			).toBe(200);
+		const before = await allSignInRowFingerprints(harness);
+		const limited = await harness.auth('/api/auth/passkey/generate-authenticate-options', init());
+		expect(limited.status).toBe(429);
+		expectRetryAfter(limited);
+		expect(await allSignInRowFingerprints(harness)).toEqual(before);
+		expect(
+			(
+				await harness.authAsBrowser(
+					'second-address',
+					'/api/auth/passkey/generate-authenticate-options',
+					init(),
+				)
+			).status,
+		).toBe(200);
 	} finally {
 		await harness.close();
 	}

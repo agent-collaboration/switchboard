@@ -11,6 +11,7 @@ const sameOriginPathSchema = z
 	.refine((path) => !path.startsWith('//'));
 
 export const signInIslandStateSchema = z.discriminatedUnion('kind', [
+	z.strictObject({ kind: z.literal('passkey-sign-in'), continueLocation: sameOriginPathSchema }),
 	z.strictObject({
 		kind: z.literal('second-factor-enrollment'),
 		ownerReadyLocation: sameOriginPathSchema,

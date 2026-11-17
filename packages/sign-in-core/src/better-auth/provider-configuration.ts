@@ -265,7 +265,7 @@ export function createSignInProvider(props: SignInProviderProps): SignInProvider
 						sessionId: candidate.session.id,
 					});
 				// Covers every get-session path (stored, refreshed): the token stays in the cookie.
-				if (context.path === '/get-session') {
+				if (context.path === '/get-session' || context.path === '/passkey/verify-authentication') {
 					const read = sessionReadWithoutToken(context.context.returned);
 					if (read.kind === 'stripped') return context.json(read.body);
 				}
@@ -282,7 +282,7 @@ export function createSignInProvider(props: SignInProviderProps): SignInProvider
 			},
 			session: {
 				create: {
-					async before(session) {
+					async before(session, context) {
 						if (!(await persons.ensurePersonActive(session.userId)))
 							throw new APIError('FORBIDDEN', { message: 'not-allowed' });
 						const memberships = requireStoredValue(
@@ -290,7 +290,14 @@ export function createSignInProvider(props: SignInProviderProps): SignInProvider
 						);
 						const onlyMembership = memberships.length === 1 ? memberships[0] : undefined;
 						return {
-							data: { ...session, activeOrganizationId: onlyMembership?.organizationId ?? null },
+							data: {
+								...session,
+								activeOrganizationId: onlyMembership?.organizationId ?? null,
+								// The plugin refuses assertions without UV before creating this session.
+								...(context?.path === '/passkey/verify-authentication'
+									? { secondFactorAt: props.platform.clock.now(), secondFactorMethod: 'passkey' }
+									: {}),
+							},
 						};
 					},
 					async after(session): Promise<void> {

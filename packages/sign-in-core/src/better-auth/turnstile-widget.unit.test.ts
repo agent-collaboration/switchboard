@@ -92,12 +92,18 @@ async function mountOwnerPage(props: {
 	const reset = vi.fn((_widgetId: string): void => resetCompleted.resolve());
 	const navigated = Promise.withResolvers<string>();
 	const navigate = vi.fn((url: string): void => navigated.resolve(url));
+	const pageEvents = new EventTarget();
 	const context = createContext({
 		document,
-		window: { turnstile: { render, reset } },
+		window: {
+			turnstile: { render, reset },
+			addEventListener: pageEvents.addEventListener.bind(pageEvents),
+			dispatchEvent: pageEvents.dispatchEvent.bind(pageEvents),
+		},
 		fetch: props.fetch,
 		location: { assign: navigate },
 		Error,
+		Event,
 	});
 	new Script(script).runInContext(context);
 	if (!props.ready) new Script('window.onSignInTurnstileReady()').runInContext(context);
@@ -151,13 +157,16 @@ test.each([
 	},
 );
 
-test('owner page renders one social widget with the configured key and leaves passkey sign-in closed', async () => {
+test('owner page renders only the social widget before a passkey click', async () => {
 	const fetch = vi.fn(async (): Promise<Response> => Response.json({}));
 	const page = await mountOwnerPage({ ready: false, fetch });
 	const container = document.getElementById('sign-in-captcha');
 	expect(container?.getAttribute('data-sitekey')).toBe('1x00000000000000000000AA');
 	expect(container?.getAttribute('data-action')).toBe('sign_in_social');
-	expect(document.querySelector('[data-action="passkey_sign_in"]')).toBeNull();
+	expect(document.getElementById('sign-in-passkey-captcha')?.getAttribute('data-sitekey')).toBe(
+		'1x00000000000000000000AA',
+	);
+	expect(page.render).toHaveBeenCalledTimes(1);
 	expect(page.render).toHaveBeenCalledWith(
 		container,
 		expect.objectContaining({
@@ -166,7 +175,7 @@ test('owner page renders one social widget with the configured key and leaves pa
 			size: 'flexible',
 		}),
 	);
-	expect(document.querySelector('script[src]')?.getAttribute('src')).toBe(
+	expect(document.getElementById('sign-in-turnstile-script')?.getAttribute('src')).toBe(
 		'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onSignInTurnstileReady&render=explicit',
 	);
 	page.form.requestSubmit(page.submitter);

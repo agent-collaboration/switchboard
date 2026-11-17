@@ -5,10 +5,138 @@ import {
 	selectAuthObservations,
 	authJourneyExecutionPattern,
 	authJourneyFiles,
+	requireAdmittedRequestLimitCounters,
 } from '#sign-in-test-support/test-fixtures/auth-verification-journeys';
 import { useControlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-node-test-clock';
+import {
+	authHarnessRequestLimitsSchema,
+	type AuthHarnessRequestLimits,
+} from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 
 useControlledSignInClock();
+
+const realWorkerdCounter: AuthHarnessRequestLimits = {
+	outerCounter: 'cloudflare-real-binding',
+	backingFailure: 'none',
+	observations: [],
+};
+const controlledPageCounter: AuthHarnessRequestLimits = {
+	outerCounter: 'cloudflare-controlled-binding-stand-in',
+	proofCase: 'service-page-exact-budget',
+	backingFailure: 'none',
+	observations: [],
+};
+const workerdBackingFailure: AuthHarnessRequestLimits = {
+	...realWorkerdCounter,
+	backingFailure: 'cloudflare-binding-rejects',
+};
+
+it('admits exactly one named controlled page counter for people on workerd without real-counter credit', () => {
+	expect(() =>
+		requireAdmittedRequestLimitCounters({
+			journey: 'people',
+			signInHost: 'workerd',
+			requestLimits: [realWorkerdCounter, controlledPageCounter, workerdBackingFailure],
+		}),
+	).not.toThrow();
+});
+
+it.each(['agent', 'bootstrap', 'organization', 'revision-fence'] as const)(
+	'rejects the controlled page counter outside people: %s',
+	(journey) => {
+		expect(() =>
+			requireAdmittedRequestLimitCounters({
+				journey,
+				signInHost: 'workerd',
+				requestLimits: [realWorkerdCounter, controlledPageCounter],
+			}),
+		).toThrow('counters differ');
+	},
+);
+
+it('rejects the controlled page counter on Node even in the people journey', () => {
+	expect(() =>
+		requireAdmittedRequestLimitCounters({
+			journey: 'people',
+			signInHost: 'node',
+			requestLimits: [
+				{ outerCounter: 'node-fixed-window', backingFailure: 'none', observations: [] },
+				{
+					outerCounter: 'node-fixed-window',
+					backingFailure: 'node-counter-throws',
+					observations: [],
+				},
+				controlledPageCounter,
+			],
+		}),
+	).toThrow('counters differ');
+});
+
+it.each([
+	{ name: 'missing', standIns: [] },
+	{ name: 'duplicated', standIns: [controlledPageCounter, controlledPageCounter] },
+])('rejects $name controlled page receipts', ({ standIns }) => {
+	expect(() =>
+		requireAdmittedRequestLimitCounters({
+			journey: 'people',
+			signInHost: 'workerd',
+			requestLimits: [realWorkerdCounter, workerdBackingFailure, ...standIns],
+		}),
+	).toThrow('counters differ');
+});
+
+it.each([undefined, 'another-case'])(
+	'rejects an unnamed or unrelated stand-in proof case: %s',
+	(proofCase) => {
+		expect(
+			authHarnessRequestLimitsSchema.safeParse({ ...controlledPageCounter, proofCase }).success,
+		).toBe(false);
+	},
+);
+
+it('rejects a stand-in that also claims the separate backing-failure proof', () => {
+	expect(() =>
+		requireAdmittedRequestLimitCounters({
+			journey: 'people',
+			signInHost: 'workerd',
+			requestLimits: [
+				realWorkerdCounter,
+				{ ...controlledPageCounter, backingFailure: 'cloudflare-binding-rejects' },
+			],
+		}),
+	).toThrow('counters differ');
+});
+
+it('keeps real counters strict for other journeys and Node', () => {
+	expect(() =>
+		requireAdmittedRequestLimitCounters({
+			journey: 'agent',
+			signInHost: 'workerd',
+			requestLimits: [realWorkerdCounter],
+		}),
+	).not.toThrow();
+	expect(() =>
+		requireAdmittedRequestLimitCounters({
+			journey: 'people',
+			signInHost: 'node',
+			requestLimits: [
+				{ outerCounter: 'node-fixed-window', backingFailure: 'none', observations: [] },
+				{
+					outerCounter: 'node-fixed-window',
+					backingFailure: 'node-counter-throws',
+					observations: [],
+				},
+			],
+		}),
+	).not.toThrow();
+	expect(() =>
+		requireAdmittedRequestLimitCounters({
+			journey: 'agent',
+			signInHost: 'node',
+			requestLimits: [realWorkerdCounter],
+		}),
+	).toThrow('counters differ');
+});
 
 const root = '/proof-checkout';
 const inventory = [

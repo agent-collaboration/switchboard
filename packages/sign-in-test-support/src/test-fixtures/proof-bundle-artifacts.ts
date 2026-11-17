@@ -284,15 +284,19 @@ export const authHarnessReadinessSchema = z.discriminatedUnion('ready', [
 ]);
 export type AuthHarnessReadiness = z.infer<typeof authHarnessReadinessSchema>;
 
-export const authHarnessRequestLimitsSchema = z.strictObject({
+const requestLimitReceiptFields = z.strictObject({
 	backingFailure: z.enum(['none', 'node-counter-throws', 'cloudflare-binding-rejects']),
-	outerCounter: z.enum([
-		'node-fixed-window',
-		'cloudflare-real-binding',
-		'cloudflare-controlled-binding-stand-in',
-	]),
 	observations: z.array(requestLimitObservationSchema),
 });
+export const authHarnessRequestLimitsSchema = z.discriminatedUnion('outerCounter', [
+	requestLimitReceiptFields.extend({
+		outerCounter: z.enum(['node-fixed-window', 'cloudflare-real-binding']),
+	}),
+	requestLimitReceiptFields.extend({
+		outerCounter: z.literal('cloudflare-controlled-binding-stand-in'),
+		proofCase: z.literal('service-page-exact-budget'),
+	}),
+]);
 export type AuthHarnessRequestLimits = z.infer<typeof authHarnessRequestLimitsSchema>;
 
 export async function recordProofHarness(

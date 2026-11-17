@@ -142,6 +142,7 @@ export interface WorkerdCentralRuntime {
 export async function startLocalAuthHarness(
 	options: {
 		readonly turnstileSecret: 'published-test' | 'missing';
+		readonly issuerHostname?: 'localhost';
 		readonly siteVerify?: 'stand-in' | 'connection-refused';
 		readonly cloudflareClientAddress?: 'stable-browser' | 'absent';
 		readonly authenticatorClock?: SignInClock;
@@ -177,6 +178,12 @@ export async function startLocalAuthHarness(
 		/** Every recorded call so far, when `nodeCapabilityRecording` armed the Node host. */
 		readonly capabilityRecords: () => readonly SignInCapabilityRecord[];
 		readonly makeLimiterUnavailable: () => Promise<void>;
+		readonly useControlledServicePageWindow: () => Promise<void>;
+		readonly failNextPasskeyUserRead: () => Promise<void>;
+		readonly lastSessionInsert: () => Promise<{
+			readonly query: string;
+			readonly parameters: readonly unknown[];
+		}>;
 		readonly siteVerifyAttempts: ReturnType<typeof createAuthProofOutbound>['siteVerifyAttempts'];
 		readonly siteVerifyTransportFailures: ReturnType<
 			typeof createAuthProofOutbound
@@ -423,7 +430,7 @@ export async function startLocalAuthHarness(
 	const address = server.address();
 	if (address === null || typeof address === 'string')
 		throw new Error('Local auth listener unavailable');
-	const issuer = `http://127.0.0.1:${address.port}`;
+	const issuer = `http://${options.issuerHostname ?? '127.0.0.1'}:${address.port}`;
 	const siteVerifyURL =
 		options.siteVerify === 'connection-refused'
 			? await closedSiteVerifyEndpoint()
@@ -694,6 +701,8 @@ export async function startLocalAuthHarness(
 	});
 	let readiness: AuthHarnessReadiness = { ready: false, readinessEvent: 'none' };
 	let backingFailure: AuthHarnessRequestLimits['backingFailure'] = 'none';
+	let outerCounter: AuthHarnessRequestLimits['outerCounter'] =
+		signInHost === 'node' ? 'node-fixed-window' : 'cloudflare-real-binding';
 	let limitObservations: AuthHarnessRequestLimits['observations'] = [];
 	const browser = createLocalAuthBrowser({
 		issuer,
@@ -757,12 +766,17 @@ export async function startLocalAuthHarness(
 	async function recordTarget(next: AuthHarnessReadiness): Promise<void> {
 		const rank = { none: 0, signInSession: 1, jwks: 2, personToken: 3 };
 		if (rank[next.readinessEvent] >= rank[readiness.readinessEvent]) readiness = next;
+		const requestLimits: AuthHarnessRequestLimits =
+			outerCounter === 'cloudflare-controlled-binding-stand-in'
+				? {
+						backingFailure,
+						outerCounter,
+						proofCase: 'service-page-exact-budget',
+						observations: limitObservations,
+					}
+				: { backingFailure, outerCounter, observations: limitObservations };
 		await recordProofHarness({
-			requestLimits: {
-				backingFailure,
-				outerCounter: signInHost === 'node' ? 'node-fixed-window' : 'cloudflare-real-binding',
-				observations: limitObservations,
-			},
+			requestLimits,
 			receiptId,
 			identity: bundles.identity,
 			configuration: {
@@ -878,10 +892,30 @@ export async function startLocalAuthHarness(
 		turnstile,
 		siteVerifyAttempts: outbound.siteVerifyAttempts,
 		siteVerifyTransportFailures: outbound.transportFailures,
+		async failNextPasskeyUserRead(): Promise<void> {
+			const response = await auth('/__auth-proof/fail-next-passkey-user-read', { method: 'POST' });
+			if (!response.ok) throw new Error('Passkey user read fault not armed');
+		},
+		async lastSessionInsert() {
+			const response = await auth('/__auth-proof/last-session-insert');
+			if (!response.ok) throw new Error('Session insert recorder unavailable');
+			return z
+				.strictObject({ query: z.string(), parameters: z.array(z.unknown()) })
+				.parse(await response.json());
+		},
 		async makeLimiterUnavailable(): Promise<void> {
 			const response = await auth('/__auth-proof/limiter-unavailable', { method: 'POST' });
 			if (!response.ok) throw new Error('Limiter failure control was not armed');
 			backingFailure = signInHost === 'node' ? 'node-counter-throws' : 'cloudflare-binding-rejects';
+			await recordTarget(readiness);
+		},
+		async useControlledServicePageWindow(): Promise<void> {
+			// Node already uses the injected clock in its real production counter.
+			if (signInHost === 'node') return;
+			const response = await auth('/__auth-proof/limiter-controlled-window', { method: 'POST' });
+			if (!response.ok) throw new Error('Controlled service-page window was not armed');
+			z.strictObject({ kind: z.literal('controlled-window') }).parse(await response.json());
+			outerCounter = 'cloudflare-controlled-binding-stand-in';
 			await recordTarget(readiness);
 		},
 		capabilityRecords(): readonly SignInCapabilityRecord[] {

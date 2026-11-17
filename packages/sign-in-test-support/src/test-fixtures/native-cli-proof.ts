@@ -129,18 +129,44 @@ export async function loginThroughNativeOwnerCli(props: {
 				: { env: { ...process.env, AUTH_PROOF_NATIVE_PROFILE_FILE: profileFile } }),
 		},
 	);
-	const ending = new Promise<number>((resolveEnd, rejectEnd) => {
-		child.once('error', rejectEnd);
-		child.once('exit', (code) => resolveEnd(code ?? 1));
-	});
 	const output: string[] = [];
 	const sensitiveValues: string[] = [];
+	const browserCompletion = Promise.withResolvers<void>();
+	void browserCompletion.promise.catch(() => undefined);
+	let browserStarted = false;
+	const safeLines = new Set([
+		...ownerLoginFailureLines,
+		'Owner management credential ready. Each command still checks the live session.',
+	]);
+	const ending = new Promise<number>((resolveEnd, rejectEnd) => {
+		child.once('error', rejectEnd);
+		child.once('close', (exitCode, signal) => {
+			process.stderr.write(
+				`${JSON.stringify({ event: 'native-owner-login-result', exitCode, signal, output: output.filter((line) => safeLines.has(line)).slice(0, 32), discardedLines: output.filter((line) => !safeLines.has(line)).length })}\n`,
+			);
+			if (exitCode !== 0 || signal !== null) {
+				const reason =
+					ownerLoginFailureLines.find((candidate) =>
+						output.some((line) => line.includes(candidate)),
+					) ?? 'unclassified-native-failure';
+				rejectEnd(new Error(`Delivered native CLI failed (${String(exitCode)}); ${reason}`));
+				return;
+			}
+			resolveEnd(exitCode);
+		});
+	});
 	const stdout = (async (): Promise<void> => {
 		for await (const line of createInterface({ input: child.stdout })) {
 			output.push(line);
-			if (line.startsWith('AUTHORIZATION_URL='))
-				sensitiveValues.push(...(await props.browser(line.slice('AUTHORIZATION_URL='.length))));
+			if (!line.startsWith('AUTHORIZATION_URL=')) continue;
+			if (browserStarted) throw new Error('Native owner CLI printed multiple authorization URLs');
+			browserStarted = true;
+			void props.browser(line.slice('AUTHORIZATION_URL='.length)).then((values) => {
+				sensitiveValues.push(...values);
+				browserCompletion.resolve();
+			}, browserCompletion.reject);
 		}
+		if (!browserStarted) browserCompletion.resolve();
 	})();
 	const stderr = (async (): Promise<void> => {
 		for await (const line of createInterface({ input: child.stderr })) {
@@ -148,21 +174,7 @@ export async function loginThroughNativeOwnerCli(props: {
 		}
 	})();
 	try {
-		const [exitCode] = await Promise.all([ending, stdout, stderr]);
-		const safeLines = new Set([
-			...ownerLoginFailureLines,
-			'Owner management credential ready. Each command still checks the live session.',
-		]);
-		process.stderr.write(
-			`${JSON.stringify({ event: 'native-owner-login-result', exitCode, output: output.filter((line) => safeLines.has(line)).slice(0, 32), discardedLines: output.filter((line) => !safeLines.has(line)).length })}\n`,
-		);
-		if (exitCode !== 0) {
-			const reason =
-				ownerLoginFailureLines.find((candidate) =>
-					output.some((line) => line.includes(candidate)),
-				) ?? 'unclassified-native-failure';
-			throw new Error(`Delivered native CLI failed (${exitCode}); ${reason}`);
-		}
+		await Promise.all([ending, stdout, stderr, browserCompletion.promise]);
 		const cached = cachedOwnerTokenSchema.parse(
 			JSON.parse(await readFile(props.target.tokenCachePath, 'utf8')),
 		);

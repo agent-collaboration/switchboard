@@ -10,7 +10,9 @@ export function ownerPageScript(props: {
 	return `<script>
 const form=document.getElementById('owner-sign-in');const statusElement=document.getElementById('status');
 const ready=${JSON.stringify(props.ready)};let captchaState={kind:'empty'};let widgetId=null;
-if(!ready){window.onSignInTurnstileReady=()=>{const container=document.getElementById('sign-in-captcha');
+if(!ready){window.signInTurnstile='loading';
+window.addEventListener('error',(event)=>{if(event.target?.id!=='sign-in-turnstile-script')return;window.signInTurnstile='failed';window.dispatchEvent(new Event('sign-in-turnstile-failed'));statusElement.textContent='Sign-in verification is unavailable.';},true);
+window.onSignInTurnstileReady=()=>{window.signInTurnstile='ready';window.dispatchEvent(new Event('sign-in-turnstile-ready'));const container=document.getElementById('sign-in-captcha');
 widgetId=window.turnstile.render(container,{sitekey:container.dataset.sitekey,action:container.dataset.action,size:'flexible',
 callback:(token)=>{captchaState=typeof token==='string'&&token.length>0?{kind:'ready',token}:{kind:'empty'};},
 'expired-callback':()=>{captchaState={kind:'empty'};},
