@@ -2,7 +2,10 @@ import type { GenericEndpointContext } from '@better-auth/core';
 import { APIError, getSession } from 'better-auth/api';
 
 import type { ReadSession } from '#sign-in-core/organizations/person-organization-context';
-import { liveOwnerSessionSchema } from '#sign-in-core/storage/models/person-session-records';
+import {
+	liveOwnerSessionSchema,
+	type LiveOwnerSession,
+} from '#sign-in-core/storage/models/person-session-records';
 
 /** Reads the hook's result, including null, without acquiring another session. */
 export function readStoredOrganizationSession(value: unknown): ReadSession {
@@ -35,6 +38,29 @@ export async function acquireReadSession(context: GenericEndpointContext): Promi
 			? { kind: 'signed-out' }
 			: { kind: 'unavailable' };
 	}
+}
+
+/** Supplies the global hook's read result to the endpoint without another acquisition. */
+export async function organizationReadSessionBeforeHook(context: GenericEndpointContext): Promise<{
+	readonly context: { readonly context: { readonly session: LiveOwnerSession | null } };
+}> {
+	const read = await acquireReadSession(context);
+	if (read.kind === 'unavailable')
+		throw new APIError('SERVICE_UNAVAILABLE', { message: 'organization-read-unavailable' });
+	// The native read may leave an expired session here; the hook merge ignores null values.
+	const session = read.kind === 'session' ? read.value : null;
+	context.context.session = session;
+	return { context: { context: { session } } };
+}
+
+/** The endpoint owns a fresh header accumulator, so retain native hook cookie clearing. */
+export function organizationReadResponseHeaders(context: GenericEndpointContext): void {
+	const hookHeaders =
+		'responseHeaders' in context.context ? context.context.responseHeaders : undefined;
+	if (hookHeaders instanceof Headers)
+		for (const cookie of hookHeaders.getSetCookie())
+			context.responseHeaders.append('set-cookie', cookie);
+	context.setHeader('cache-control', 'no-store');
 }
 
 export function isOrganizationMembershipReadPath(path: string | undefined): boolean {

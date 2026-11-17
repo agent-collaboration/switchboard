@@ -15,7 +15,7 @@ import { createOrganizationMembershipReadPlugin } from '#sign-in-core/better-aut
 import { createOrganizationProviderPlugin } from '#sign-in-core/better-auth/organization-provider-options';
 import { createOrganizationProvisioningPlugin } from '#sign-in-core/better-auth/organization-provisioning-plugin';
 import {
-	acquireReadSession,
+	organizationReadSessionBeforeHook,
 	isOrganizationMembershipReadPath,
 } from '#sign-in-core/better-auth/organization-read-session';
 import { createOrganizationStatementPlugin } from '#sign-in-core/better-auth/organization-statement-plugin';
@@ -234,14 +234,7 @@ export function createSignInProvider(props: SignInProviderProps): SignInProvider
 					readonly context: { readonly context: { readonly session: LiveOwnerSession | null } };
 				}> => {
 					if (isOrganizationMembershipReadPath(context.path)) {
-						const read = await acquireReadSession(context);
-						if (read.kind === 'unavailable')
-							throw new APIError('SERVICE_UNAVAILABLE', {
-								message: 'organization-read-unavailable',
-							});
-						return {
-							context: { context: { session: read.kind === 'session' ? read.value : null } },
-						};
+						return organizationReadSessionBeforeHook(context);
 					}
 					if (context.path?.startsWith('/organization/')) {
 						const current = await getSessionFromCtx(context, { disableCookieCache: true });

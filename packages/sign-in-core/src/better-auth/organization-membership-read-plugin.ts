@@ -3,7 +3,10 @@ import { createAuthEndpoint } from 'better-auth/api';
 import { z } from 'zod';
 
 import { checkOrganizationPermission } from '#sign-in-core/better-auth/organization-permission-check';
-import { readStoredOrganizationSession } from '#sign-in-core/better-auth/organization-read-session';
+import {
+	readStoredOrganizationSession,
+	organizationReadResponseHeaders,
+} from '#sign-in-core/better-auth/organization-read-session';
 import {
 	organizationPeopleListRequestSchema,
 	organizationPersonLookupRequestSchema,
@@ -139,7 +142,7 @@ export function createOrganizationMembershipReadPlugin(props: {
 				'/organization/self-context',
 				{ method: 'GET', query: z.unknown() },
 				async (context) => {
-					context.setHeader('cache-control', 'no-store');
+					organizationReadResponseHeaders(context);
 					if (!z.strictObject({}).safeParse(context.query ?? {}).success) {
 						context.setStatus(400);
 						return context.json({ error: 'invalid-request' });
@@ -157,7 +160,7 @@ export function createOrganizationMembershipReadPlugin(props: {
 				'/organization/person-membership',
 				{ method: 'POST', body: z.unknown() },
 				async (context) => {
-					context.setHeader('cache-control', 'no-store');
+					organizationReadResponseHeaders(context);
 					const request = organizationPersonLookupRequestSchema.safeParse(context.body);
 					if (!request.success) {
 						context.setStatus(400);
@@ -172,7 +175,7 @@ export function createOrganizationMembershipReadPlugin(props: {
 				'/organization/people-list',
 				{ method: 'GET', query: z.unknown() },
 				async (context) => {
-					context.setHeader('cache-control', 'no-store');
+					organizationReadResponseHeaders(context);
 					const request = organizationPeopleListRequestSchema.safeParse(context.query);
 					if (!request.success) {
 						context.setStatus(400);
@@ -187,7 +190,7 @@ export function createOrganizationMembershipReadPlugin(props: {
 				'/organization/people',
 				{ method: 'GET', query: z.unknown() },
 				async (context) => {
-					context.setHeader('cache-control', 'no-store');
+					organizationReadResponseHeaders(context);
 					const request = z
 						.strictObject({ organizationId: organizationIdSchema })
 						.safeParse(context.query);
