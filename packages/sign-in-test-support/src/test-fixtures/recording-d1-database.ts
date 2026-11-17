@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
 	databaseFaultSchema,
 	matchesDatabaseFault,
+	organizationReadProjection,
 	type DatabaseFault,
 	type PreparedDriverCall,
 } from '#sign-in-test-support/test-fixtures/database-fault-identity';
@@ -12,6 +13,7 @@ import {
 } from '#sign-in-test-support/test-fixtures/database-proof-holds';
 
 let activeFault: DatabaseFault | null = null;
+const organizationReads = { lookup: 0, list: 0 };
 let observedClient: { readonly clientId: string; readonly keys: readonly string[] } | null = null;
 const disabledWrites: { readonly client_id: string }[] = [];
 const driverFailures: {
@@ -41,10 +43,15 @@ export async function handleDatabaseProofControl(request: Request): Promise<Resp
 	const url = new URL(request.url);
 	if (url.pathname !== '/__auth-proof/database-control') return null;
 	if (request.method === 'GET')
-		return Response.json({ disabledWrites, driverFailures: driverFailures.slice(-8) });
+		return Response.json({
+			disabledWrites,
+			driverFailures: driverFailures.slice(-8),
+			organizationReads,
+		});
 	const control = z
 		.discriminatedUnion('kind', [
 			z.strictObject({ kind: z.literal('fault'), fault: databaseFaultSchema.nullable() }),
+			z.strictObject({ kind: z.literal('observe-organization-reads') }),
 			z.strictObject({
 				kind: z.literal('observe-disable'),
 				clientId: z.string(),
@@ -53,7 +60,10 @@ export async function handleDatabaseProofControl(request: Request): Promise<Resp
 		])
 		.parse(await request.json());
 	if (control.kind === 'fault') activeFault = control.fault;
-	else {
+	else if (control.kind === 'observe-organization-reads') {
+		organizationReads.lookup = 0;
+		organizationReads.list = 0;
+	} else {
 		observedClient = control;
 		disabledWrites.length = 0;
 	}
@@ -87,9 +97,14 @@ export function recordingD1Database(
 	afterDriverRead: (query: string) => Promise<void> = async () => undefined,
 ): AuthWorkerEnv['DB'] {
 	function rejectFault(call: PreparedDriverCall): void {
+		const projection = organizationReadProjection(call);
+		if (projection === 'membership-facts') organizationReads.lookup += 1;
+		if (projection === 'people-members') organizationReads.list += 1;
 		const fault = readFault();
-		if (fault !== null && matchesDatabaseFault(call, fault))
+		if (fault !== null && matchesDatabaseFault(call, fault)) {
+			if (fault.once === true && fault === activeFault) activeFault = null;
 			throw new Error('Injected sign-in driver failure');
+		}
 	}
 	const observer = createDatabaseReadHold(hold);
 	const calls = new WeakMap<

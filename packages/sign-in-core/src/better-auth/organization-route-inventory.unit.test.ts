@@ -35,3 +35,16 @@ it('offers exactly the six adopted POST routes from the installed organization p
 	}
 	expect(offered.toSorted()).toEqual(expected);
 });
+
+it('adds exactly three scoped GET reads and one scoped POST read beside the closed native inventory', () => {
+	const expected = new Map([
+		['/api/auth/organization/self-context', 'GET'],
+		['/api/auth/organization/people-list', 'GET'],
+		['/api/auth/organization/people', 'GET'],
+		['/api/auth/organization/person-membership', 'POST'],
+	]);
+	for (const [path, allowedMethod] of expected) {
+		for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+			expect(isPublicSignInRoute(path, method)).toBe(method === allowedMethod);
+	}
+});

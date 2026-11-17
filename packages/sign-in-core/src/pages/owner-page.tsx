@@ -15,15 +15,21 @@ import {
 	FieldLabel,
 	Input,
 } from '@agent-collaboration/tool-access-ui/server';
-import { ChevronRight } from 'lucide-react';
 import * as React from 'react';
 
 import type { FactorPageState } from '#sign-in-core/better-auth/factor-enrollment-page';
 import type { SignInConfiguration } from '#sign-in-core/contracts/deployment-configuration';
+import type { OrganizationChoice } from '#sign-in-core/contracts/organization-membership';
 import type { OrganizationFleetState } from '#sign-in-core/organizations/organization-provisioning';
 import { FactorControls } from '#sign-in-core/pages/factor-page';
-import { PageStatus, SetupSteps, type SetupStep } from '#sign-in-core/pages/page-document';
-import type { OrganizationMembership } from '#sign-in-core/storage/organization-membership-store';
+import {
+	IslandRoot,
+	PageStatus,
+	SetupSteps,
+	type SetupStep,
+} from '#sign-in-core/pages/page-document';
+import { OrganizationChooserCard } from '#sign-in-core/pages/person-organization-choice';
+import type { OrganizationId } from '#sign-in-core/storage/models/sign-in-store';
 
 export interface OwnerPageProps {
 	readonly ready: boolean;
@@ -36,10 +42,9 @@ export interface OwnerPageProps {
 		readonly state: OrganizationFleetState;
 	};
 	readonly factorPage?: FactorPageState;
-	readonly organizationChoices?: readonly Pick<
-		OrganizationMembership,
-		'organizationId' | 'organizationName' | 'role'
-	>[];
+	readonly memberships?: readonly OrganizationChoice[];
+	readonly selectionRequired: boolean;
+	readonly activeOrganizationId?: OrganizationId | null;
 }
 
 /** What the signed-in page still asks about organizations. The server decides:
@@ -47,7 +52,7 @@ export interface OwnerPageProps {
 type OrganizationTask = 'create' | 'choose' | 'none';
 
 function organizationTaskOf(props: OwnerPageProps): OrganizationTask {
-	if ((props.organizationChoices?.length ?? 0) > 0) return 'choose';
+	if (props.selectionRequired) return 'choose';
 	return props.createOrganization === true ? 'create' : 'none';
 }
 
@@ -191,52 +196,17 @@ function ConfirmSecondFactorAgain(): React.ReactElement {
 	);
 }
 
-const organizationRoleLabel: Readonly<Record<OrganizationMembership['role'], string>> = {
-	owner: 'Owner',
-	member: 'Member',
-};
-
-/** Clerk's choose-organization pattern: one row per membership, the row is
- * the action. Its value is the organization id the controller sets active. */
-function OrganizationChooserCard({
-	choices,
-}: {
-	readonly choices: NonNullable<OwnerPageProps['organizationChoices']>;
-}): React.ReactElement {
+function MembershipChoices(props: OwnerPageProps): React.ReactElement | null {
+	if ((props.memberships?.length ?? 0) === 0) return null;
+	const choices = props.memberships ?? [];
+	const activeOrganizationId = props.activeOrganizationId ?? null;
 	return (
-		<Card className="py-2">
-			<form id="choose-organization">
-				<ul aria-label="Your organizations" className="flex flex-col">
-					{choices.map((choice) => (
-						<li key={choice.organizationId} className="px-2">
-							<Button
-								type="submit"
-								name="organizationId"
-								value={choice.organizationId}
-								variant="ghost"
-								className="h-auto w-full justify-start gap-3 px-2 py-2 text-left"
-							>
-								<span
-									aria-hidden="true"
-									className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-sm font-medium text-foreground"
-								>
-									{choice.organizationName.trim().charAt(0).toUpperCase() || '?'}
-								</span>
-								<span className="flex min-w-0 flex-1 flex-col">
-									<span className="truncate text-sm font-medium text-foreground">
-										{choice.organizationName}
-									</span>
-									<span className="text-xs text-muted-foreground">
-										{organizationRoleLabel[choice.role]}
-									</span>
-								</span>
-								<ChevronRight aria-hidden="true" className="text-muted-foreground" />
-							</Button>
-						</li>
-					))}
-				</ul>
-			</form>
-		</Card>
+		<IslandRoot
+			state={{ kind: 'person-organization-choice', choices, activeOrganizationId }}
+			fallback={
+				<OrganizationChooserCard choices={choices} activeOrganizationId={activeOrganizationId} />
+			}
+		/>
 	);
 }
 
@@ -269,7 +239,7 @@ function continueIsThePageTask(props: OwnerPageProps): boolean {
 	const factorPage = props.factorPage ?? 'hidden';
 	return (
 		props.ready &&
-		(props.organizationChoices?.length ?? 0) === 0 &&
+		!props.selectionRequired &&
 		(factorPage === 'hidden' || (factorPage === 'confirmed' && props.createOrganization !== true))
 	);
 }
@@ -289,7 +259,7 @@ function OrganizationSetupCard({
 }): React.ReactElement {
 	const ready = setup.state === 'ready';
 	return (
-		<Card>
+		<Card data-organization-id={setup.organizationId}>
 			<CardHeader>
 				<CardTitle>Fleet setup</CardTitle>
 				<CardDescription id="organization-setup-state">
@@ -334,6 +304,7 @@ export function OwnerPage(props: OwnerPageProps): React.ReactElement {
 					</CardFooter>
 				</Card>
 				<PageStatus />
+				<MembershipChoices {...props} />
 				{props.organizationSetup !== undefined && (
 					<OrganizationSetupCard setup={props.organizationSetup} />
 				)}
@@ -343,13 +314,14 @@ export function OwnerPage(props: OwnerPageProps): React.ReactElement {
 	const organizationTask = organizationTaskOf(props);
 	const factorPending = factorStepPending(factorPage);
 	const steps =
-		organizationTask !== 'none' && factorPage !== 'hidden'
+		organizationTask !== 'none' &&
+		factorPage !== 'hidden' &&
+		!(organizationTask === 'choose' && factorPending)
 			? signInFlowSteps(factorPage, organizationTask)
 			: undefined;
 	let currentTask: React.ReactElement;
 	if (factorPending) currentTask = <FactorControls state={factorPage} resume={props.resume} />;
-	else if (organizationTask === 'choose')
-		currentTask = <OrganizationChooserCard choices={props.organizationChoices ?? []} />;
+	else if (organizationTask === 'choose') currentTask = <MembershipChoices {...props} />;
 	else if (organizationTask === 'create') currentTask = <CreateOrganizationCard />;
 	else currentTask = <FactorControls state={factorPage} resume={props.resume} />;
 	const creatingOrganization = !factorPending && organizationTask === 'create';
@@ -357,6 +329,7 @@ export function OwnerPage(props: OwnerPageProps): React.ReactElement {
 		<>
 			{steps !== undefined && <SetupSteps steps={steps} />}
 			{currentTask}
+			{(organizationTask !== 'choose' || factorPending) && <MembershipChoices {...props} />}
 			<PageStatus />
 			{creatingOrganization && <ConfirmSecondFactorAgain />}
 			{props.organizationSetup !== undefined && (
@@ -369,7 +342,5 @@ export function OwnerPage(props: OwnerPageProps): React.ReactElement {
 /** Secondary actions under the page's one task. */
 export function OwnerPageFooter(props: OwnerPageProps): React.ReactElement | undefined {
 	if (!props.ready || continueIsThePageTask(props)) return undefined;
-	return (
-		<ContinueToCli prominence="link" disabled={(props.organizationChoices?.length ?? 0) > 0} />
-	);
+	return <ContinueToCli prominence="link" disabled={props.selectionRequired} />;
 }

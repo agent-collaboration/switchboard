@@ -1,4 +1,8 @@
 import {
+	organizationRequestErrorResponse,
+	organizationReadResponse,
+} from '#sign-in-core/response-release/organization-request-errors';
+import {
 	releaseSignInResponse,
 	type IssuedPersonSession,
 	type SignInResponseReleasePorts,
@@ -11,7 +15,16 @@ export function isPublicSignInRoute(pathname: string, method: string): boolean {
 	// The session token is stripped from get-session before it reaches scripts.
 	if (pathname === '/api/auth/get-session' || pathname === '/api/auth/list-accounts')
 		return method === 'GET';
-	if (pathname.startsWith('/api/auth/organization/'))
+	if (pathname.startsWith('/api/auth/organization/')) {
+		if (
+			[
+				'/api/auth/organization/self-context',
+				'/api/auth/organization/people-list',
+				'/api/auth/organization/people',
+			].includes(pathname)
+		)
+			return method === 'GET';
+		if (pathname === '/api/auth/organization/person-membership') return method === 'POST';
 		return (
 			method === 'POST' &&
 			[
@@ -24,6 +37,7 @@ export function isPublicSignInRoute(pathname: string, method: string): boolean {
 				'/api/auth/organization/retry-provisioning',
 			].includes(pathname)
 		);
+	}
 	if (pathname.startsWith('/api/auth/passkey/') || pathname.startsWith('/api/auth/two-factor/'))
 		return (
 			(method === 'GET' &&
@@ -80,6 +94,8 @@ export async function handleSignInRequest(props: {
 	const pathname = new URL(props.request.url).pathname;
 	if (!isPublicSignInRoute(pathname, props.request.method))
 		return Response.json({ error: 'not-found' }, { status: 404 });
+	const invalidOrganizationRequest = await organizationRequestErrorResponse(props.request);
+	if (invalidOrganizationRequest !== null) return invalidOrganizationRequest;
 	if (pathname === '/api/auth/organization/invite-member') {
 		let resendRequested = false;
 		try {
@@ -105,11 +121,19 @@ export async function handleSignInRequest(props: {
 		tokenGrant = body.get('grant_type') === 'client_credentials' ? 'client_credentials' : 'person';
 	}
 	const response = await props.providerHandler(props.request);
-	return releaseSignInResponse({
-		response,
-		tokenGrant,
-		issuedSessions: props.issuedSessions,
-		createdUserIds: props.createdUserIds,
-		ports: props.ports,
-	});
+	if (pathname === '/api/auth/organization/person-membership' && response.status === 400)
+		return Response.json(
+			{ error: 'invalid-request' },
+			{ status: 400, headers: { 'cache-control': 'no-store' } },
+		);
+	return organizationReadResponse(
+		props.request,
+		await releaseSignInResponse({
+			response,
+			tokenGrant,
+			issuedSessions: props.issuedSessions,
+			createdUserIds: props.createdUserIds,
+			ports: props.ports,
+		}),
+	);
 }

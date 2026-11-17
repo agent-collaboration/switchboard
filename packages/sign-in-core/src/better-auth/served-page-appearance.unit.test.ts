@@ -5,6 +5,9 @@ import { renderFactorFormResponse } from '#sign-in-core/better-auth/factor-enrol
 import { minimalOwnerPage } from '#sign-in-core/better-auth/minimal-owner-pages';
 import { signInConfigurationSchema } from '#sign-in-core/contracts/deployment-configuration';
 import type { SignInCrypto } from '#sign-in-core/contracts/sign-in-platform';
+import { organizationIdSchema } from '#sign-in-core/storage/models/sign-in-store';
+const firstOrganizationId = organizationIdSchema.parse('019a3dce-2000-7000-8000-0000000000a1');
+const secondOrganizationId = organizationIdSchema.parse('019a3dce-2000-7000-8000-0000000000a2');
 
 /** Known random bytes 00…0f, so every page's nonce is the same fixed value. */
 const fixedBytesCrypto: SignInCrypto = {
@@ -64,8 +67,15 @@ it.each([
 			factorPage,
 			configuration,
 			resume: null,
-			organizationChoices: chooseOrganization
-				? [{ organizationId: 'one', organizationName: 'My organization', role: 'owner' }]
+			selectionRequired: chooseOrganization,
+			memberships: chooseOrganization
+				? [
+						{
+							organizationId: firstOrganizationId,
+							organizationName: 'My organization',
+							role: 'owner',
+						},
+					]
 				: [],
 		});
 		const page = new DOMParser().parseFromString(await response.text(), 'text/html');
@@ -156,13 +166,24 @@ it('renders untrusted organization labels in the chooser as text', async () => {
 		configuration,
 		resume: null,
 		factorPage: 'confirmed',
-		organizationChoices: [
-			{ organizationId: 'one', organizationName: '<script>untrusted()</script>', role: 'member' },
-			{ organizationId: 'two', organizationName: 'Second organization', role: 'owner' },
+		selectionRequired: true,
+		memberships: [
+			{
+				organizationId: firstOrganizationId,
+				organizationName: '<script>untrusted()</script>',
+				role: 'member',
+			},
+			{
+				organizationId: secondOrganizationId,
+				organizationName: 'Second organization',
+				role: 'owner',
+			},
 		],
 	});
 	const page = await expectPanelDocument(response);
-	const row = page.querySelector('#choose-organization button[name="organizationId"][value="one"]');
+	const row = page.querySelector(
+		'#choose-organization button[name="organizationId"][value="019a3dce-2000-7000-8000-0000000000a1"]',
+	);
 	expect(row?.textContent).toContain('<script>untrusted()</script>');
 	expect(row?.textContent).toContain('Member');
 	expect(row?.querySelector('script')).toBeNull();
@@ -233,9 +254,10 @@ it('names the Turnstile origin only in the sign-in page policy, and frames only 
 			configuration,
 			resume: null,
 			factorPage: 'confirmed',
-			organizationChoices: [
-				{ organizationId: 'one', organizationName: 'One', role: 'owner' },
-				{ organizationId: 'two', organizationName: 'Two', role: 'member' },
+			selectionRequired: true,
+			memberships: [
+				{ organizationId: firstOrganizationId, organizationName: 'One', role: 'owner' },
+				{ organizationId: secondOrganizationId, organizationName: 'Two', role: 'member' },
 			],
 		}),
 		...(await Promise.all(
@@ -344,3 +366,123 @@ it('the page policy text is exactly main f3b2b88b, with only the nonce value sub
 		`default-src 'none'; script-src 'nonce-${fixedNonce}'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src blob:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
 	);
 });
+
+it('keeps memberships and switching visible after a choice while enabling the CLI continuation', async () => {
+	const memberships = [
+		{
+			organizationId: firstOrganizationId,
+			organizationName: 'First organization',
+			role: 'owner' as const,
+		},
+		{
+			organizationId: secondOrganizationId,
+			organizationName: 'Second organization',
+			role: 'member' as const,
+		},
+	];
+	await Promise.all(
+		[firstOrganizationId, secondOrganizationId].map(async (activeOrganizationId): Promise<void> => {
+			const response = minimalOwnerPage({
+				crypto: fixedBytesCrypto,
+				ready: true,
+				configuration,
+				resume: null,
+				factorPage: 'hidden',
+				memberships,
+				activeOrganizationId,
+				selectionRequired: false,
+			});
+			const page = await expectPanelDocument(response);
+			expect(page.querySelector('h1')?.textContent).toBe('Your account');
+			expect(page.querySelector('#owner-sign-in button')?.hasAttribute('disabled')).toBe(false);
+			expect(page.querySelector('#choose-organization')?.textContent).toContain(
+				'First organization',
+			);
+			expect(page.querySelector('#choose-organization')?.textContent).toContain(
+				'Second organization',
+			);
+			expect(
+				page.querySelector(`#choose-organization button[value="${activeOrganizationId}"]`)
+					?.textContent,
+			).toContain('Current');
+			const otherId =
+				activeOrganizationId === firstOrganizationId ? secondOrganizationId : firstOrganizationId;
+			expect(
+				page
+					.querySelector(`#choose-organization button[value="${otherId}"]`)
+					?.hasAttribute('disabled'),
+			).toBe(false);
+			expect(
+				[...page.querySelectorAll('script')].some((script) =>
+					script.textContent?.includes('mountSignInIslands'),
+				),
+			).toBe(true);
+		}),
+	);
+});
+
+it('disables the CLI only while a choice is required and keeps a sole membership informational', async () => {
+	const membership = {
+		organizationId: firstOrganizationId,
+		organizationName: 'Only organization',
+		role: 'member' as const,
+	};
+	await Promise.all(
+		[true, false].map(async (selectionRequired): Promise<void> => {
+			const response = minimalOwnerPage({
+				crypto: fixedBytesCrypto,
+				ready: true,
+				configuration,
+				resume: null,
+				factorPage: 'hidden',
+				memberships: selectionRequired
+					? [membership, { ...membership, organizationId: secondOrganizationId }]
+					: [membership],
+				activeOrganizationId: null,
+				selectionRequired,
+			});
+			const page = await expectPanelDocument(response);
+			expect(page.querySelector('h1')?.textContent).toBe(
+				selectionRequired ? 'Choose your organization' : 'Your account',
+			);
+			expect(page.querySelector('#owner-sign-in button')?.hasAttribute('disabled')).toBe(
+				selectionRequired,
+			);
+			if (!selectionRequired)
+				expect(page.querySelector('#choose-organization button')?.hasAttribute('disabled')).toBe(
+					true,
+				);
+		}),
+	);
+});
+
+it.each(['enroll-app', 'confirm'] as const)(
+	'offers switching without a fresh second factor while %s is pending',
+	async (factorPage) => {
+		const response = minimalOwnerPage({
+			crypto: fixedBytesCrypto,
+			ready: true,
+			configuration,
+			resume: null,
+			factorPage,
+			selectionRequired: true,
+			activeOrganizationId: null,
+			memberships: [
+				{
+					organizationId: firstOrganizationId,
+					organizationName: 'First organization',
+					role: 'owner',
+				},
+				{
+					organizationId: secondOrganizationId,
+					organizationName: 'Second organization',
+					role: 'member',
+				},
+			],
+		});
+		const page = await expectPanelDocument(response);
+		expect(page.querySelectorAll('#choose-organization button:not([disabled])')).toHaveLength(2);
+		expect(page.querySelector('#owner-sign-in button')?.hasAttribute('disabled')).toBe(true);
+		expect(page.body.textContent).not.toContain('then choose your organization');
+	},
+);

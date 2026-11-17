@@ -43,6 +43,7 @@ import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/contr
 import {
 	databaseFaultSchema,
 	matchesDatabaseFault,
+	organizationReadProjection,
 	type DatabaseFault,
 } from '#sign-in-test-support/test-fixtures/database-fault-identity';
 import { handleFleetAdminClientProof } from '#sign-in-test-support/test-fixtures/fleet-admin-client-proof';
@@ -68,6 +69,10 @@ import { recordNodeProofInvocationFailure } from '#sign-in-test-support/test-fix
 import { decorateNodeProofStore } from '#sign-in-test-support/test-fixtures/node-proof-store';
 import { withNodeProviderNetwork } from '#sign-in-test-support/test-fixtures/node-provider-network';
 import { handleOrganizationKeyChangeProofRequest } from '#sign-in-test-support/test-fixtures/organization-key-change-proof';
+import {
+	readOrganizationReadProbe,
+	type OrganizationReadProbe,
+} from '#sign-in-test-support/test-fixtures/organization-read-proof';
 import {
 	readPersonConfirmationProbe,
 	personSessionReadKind,
@@ -117,6 +122,7 @@ export async function startNodeAuthProofHost(props: {
 	readonly capabilityRecording?: NodeCapabilityRecordingOption;
 }): Promise<NodeAuthProofHost> {
 	let fault: DatabaseFault | null = null;
+	const organizationReads = { lookup: 0, list: 0 };
 	let observed: { readonly clientId: string; readonly keys: readonly string[] } | null = null;
 	const disabledWrites: { readonly client_id: string }[] = [];
 	const receipts: NodeInvocationReceipt[] = [];
@@ -149,8 +155,13 @@ export async function startNodeAuthProofHost(props: {
 					vi.setSystemTime(milliseconds);
 					confirmation.phase = { kind: 'advanced', probe: confirmation.phase.probe };
 				}
-				if (fault !== null && matchesDatabaseFault(call, fault))
+				const projection = organizationReadProjection(call);
+				if (projection === 'membership-facts') organizationReads.lookup += 1;
+				if (projection === 'people-members') organizationReads.list += 1;
+				if (fault !== null && matchesDatabaseFault(call, fault)) {
+					if (fault.once === true) fault = null;
 					throw new Error('Injected Node sign-in driver failure');
+				}
 				if (
 					observed !== null &&
 					observed.keys.length > 0 &&
@@ -279,13 +290,27 @@ export async function startNodeAuthProofHost(props: {
 			| { readonly kind: 'token'; readonly clientId: string }
 			| { readonly kind: 'management'; readonly requestId: string }
 			| { readonly kind: 'confirmation'; readonly sessionId: string }
-			| { readonly kind: 'fleet-snapshot'; readonly probe: FleetSnapshotProbe },
+			| { readonly kind: 'fleet-snapshot'; readonly probe: FleetSnapshotProbe }
+			| { readonly kind: 'organization-read'; readonly probe: OrganizationReadProbe },
 		invocationId?: string,
 	): SignInHttpConfiguration {
 		let agentReads = 0;
 		let ownerReads = 0;
 		const decorated = decorateNodeProofStore({
 			store: configuration.store,
+			...(hold.kind === 'organization-read'
+				? {
+						organizationRead: {
+							async afterRead(kind: 'lookup' | 'list', organizationId: string): Promise<void> {
+								if (kind === hold.probe.kind && organizationId === hold.probe.organizationId)
+									await barrier('hold', 'arrive', hold.probe.key, {
+										point: 'organization-read',
+										kind,
+									});
+							},
+						},
+					}
+				: {}),
 			...(hold.kind === 'confirmation'
 				? {
 						personConfirmation: {
@@ -417,6 +442,11 @@ export async function startNodeAuthProofHost(props: {
 			() => configuration,
 		);
 		if (introspectionFixture !== null) return introspectionFixture;
+		const organizationRead = readOrganizationReadProbe(request);
+		if (organizationRead !== null)
+			return createSignInHttpHandler(
+				configurationWithHold({ kind: 'organization-read', probe: organizationRead }),
+			)(request);
 		const fleetSnapshot = readFleetSnapshotProbe(request);
 		if (fleetSnapshot !== null)
 			return createSignInHttpHandler(
@@ -446,10 +476,12 @@ export async function startNodeAuthProofHost(props: {
 			return Response.json({ kind: 'armed' });
 		}
 		if (pathname === '/__auth-proof/database-control') {
-			if (request.method === 'GET') return Response.json({ disabledWrites, driverFailures: [] });
+			if (request.method === 'GET')
+				return Response.json({ disabledWrites, driverFailures: [], organizationReads });
 			const control = z
 				.discriminatedUnion('kind', [
 					z.strictObject({ kind: z.literal('fault'), fault: databaseFaultSchema.nullable() }),
+					z.strictObject({ kind: z.literal('observe-organization-reads') }),
 					z.strictObject({
 						kind: z.literal('observe-disable'),
 						clientId: z.string(),
@@ -458,7 +490,10 @@ export async function startNodeAuthProofHost(props: {
 				])
 				.parse(await request.json());
 			if (control.kind === 'fault') fault = control.fault;
-			else {
+			else if (control.kind === 'observe-organization-reads') {
+				organizationReads.lookup = 0;
+				organizationReads.list = 0;
+			} else {
 				observed = control;
 				disabledWrites.length = 0;
 			}
