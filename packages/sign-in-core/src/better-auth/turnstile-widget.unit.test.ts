@@ -136,8 +136,9 @@ test.each([
 			code_challenge_method: 'S256',
 			code_challenge: 'replacement-token-test',
 		}).toString();
-		const resume = ownerAuthorizationResume(authorization.toString() + suffix, configuration);
-		if (resume === null) throw new Error('Missing validated continuation');
+		const continuation = ownerAuthorizationResume(authorization.toString() + suffix, configuration);
+		if (continuation.kind !== 'resume') throw new Error('Missing validated continuation');
+		const resume = continuation.authorization;
 		expect(resume).toContain(token);
 		const page = await mountOwnerPage({
 			ready: true,
