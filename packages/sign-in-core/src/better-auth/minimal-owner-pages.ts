@@ -4,16 +4,24 @@ import type { SignInCrypto } from '#sign-in-core/contracts/sign-in-platform';
 import type { OwnerPageProps } from '#sign-in-core/pages/owner-page';
 import { renderOwnerPage } from '#sign-in-core/pages/owner-page-document';
 
+/** A requested owner CLI continuation is client input: absent, the fixed resumable one, or refused. */
+export type OwnerAuthorizationResume =
+	| { readonly kind: 'absent' }
+	| { readonly kind: 'resume'; readonly authorization: string }
+	| { readonly kind: 'refused' };
+
 /** Only fixed management authorization may resume after the owner's provider sign-in. */
 export function ownerAuthorizationResume(
 	value: string | null,
 	configuration: SignInConfiguration,
-): string | null {
-	if (value === null) return null;
-	const authorization = new URL(value);
-	const callback = new URL(authorization.searchParams.get('redirect_uri') ?? 'invalid:');
+): OwnerAuthorizationResume {
+	if (value === null) return { kind: 'absent' };
+	const authorization = URL.parse(value);
+	if (authorization === null) return { kind: 'refused' };
+	const callback = URL.parse(authorization.searchParams.get('redirect_uri') ?? 'invalid:');
 	const configuredCallback = new URL(configuration.ownerCliRedirectUri);
 	if (
+		callback === null ||
 		authorization.origin !== new URL(configuration.issuer).origin ||
 		authorization.pathname !== '/api/auth/oauth2/authorize' ||
 		authorization.username !== '' ||
@@ -34,8 +42,8 @@ export function ownerAuthorizationResume(
 		callback.password !== '' ||
 		callback.hash !== ''
 	)
-		throw new Error('Invalid owner CLI authorization resume');
-	return authorization.toString();
+		return { kind: 'refused' };
+	return { kind: 'resume', authorization: authorization.toString() };
 }
 
 /** Provider and session actions retain their native authorization boundary. Always renders, so

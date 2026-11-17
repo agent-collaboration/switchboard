@@ -334,6 +334,8 @@ export async function startLocalAuthHarness(
 					host: signInHost,
 				};
 				const transport = observeAuthProofForwarder(context, response);
+				// Bytes, not text: an edge relays a request without inventing a content type for it.
+				const forwardedBody = body === '' ? {} : { body: new TextEncoder().encode(body) };
 				if (nodeRequest && nodeHost === undefined)
 					throw new Error('Selected Node sign-in host is unavailable');
 				if (invocationId !== null) headers['x-auth-proof-invocation'] = invocationId;
@@ -344,7 +346,7 @@ export async function startLocalAuthHarness(
 							: await fetch(new URL(pathname, nodeHost.address), {
 									method: request.method ?? 'GET',
 									headers,
-									...(body === '' ? {} : { body }),
+									...forwardedBody,
 									redirect: 'manual',
 								})
 						: browserNavigation
@@ -354,7 +356,7 @@ export async function startLocalAuthHarness(
 								).fetch(`${issuer}${pathname}`, {
 									method: request.method ?? 'GET',
 									headers,
-									...(body === '' ? {} : { body }),
+									...forwardedBody,
 									redirect: 'manual',
 								});
 				transport.headersReceived(result.status);

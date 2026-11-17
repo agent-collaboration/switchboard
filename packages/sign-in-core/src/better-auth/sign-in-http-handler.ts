@@ -1,3 +1,4 @@
+import { decodeBasicCredentials } from '@better-auth/core/oauth2';
 import { decodeJwt, decodeProtectedHeader } from 'jose';
 
 import {
@@ -34,6 +35,7 @@ import {
 	createProviderRequestState,
 	type ProviderRequestState,
 } from '#sign-in-core/better-auth/provider-request-state';
+import { readProviderRouterBody } from '#sign-in-core/better-auth/provider-router-body';
 import {
 	agentRegistrationPorts,
 	personSessionPorts,
@@ -204,25 +206,38 @@ export function createSignInHttpHandler(
 				return await respondToOrganizationAdmin(request, url.pathname, state);
 			// Validate continuation before any native factor mutation, not after
 			// confirmation has already rotated the browser's session cookie.
-			const factorResume = url.pathname.startsWith('/api/auth/two-factor/')
+			const factorContinuation = url.pathname.startsWith('/api/auth/two-factor/')
 				? ownerAuthorizationResume(url.searchParams.get('authorize'), configuration.configuration)
 				: null;
+			if (factorContinuation?.kind === 'refused') return invalidRequestResponse();
+			const factorResume =
+				factorContinuation?.kind === 'resume' ? factorContinuation.authorization : null;
 			if (url.pathname === '/api/auth/link-social') {
-				let payload: unknown;
-				try {
-					payload = await request.clone().json();
-				} catch (error) {
-					if (!(error instanceof SyntaxError)) throw error;
-					// Match the native parser before the live-session check can hide malformed JSON.
-					return Response.json(
-						{ code: 'BAD_REQUEST', message: 'Invalid JSON in request body' },
-						{ status: 400, headers: { 'cache-control': 'no-store' } },
-					);
-				}
-				if (payload !== null && typeof payload === 'object' && Object.hasOwn(payload, 'idToken'))
+				// The provider refuses a body at parse time, before its session check; so must this
+				// wrapper, before its own live-session check can answer first.
+				const body = await readProviderRouterBody(request);
+				if (body.kind === 'refused') return body.response;
+				if (
+					body.kind === 'json' &&
+					body.payload !== null &&
+					typeof body.payload === 'object' &&
+					Object.hasOwn(body.payload, 'idToken')
+				)
 					return Response.json({ error: 'redirect-linking-required' }, { status: 400 });
 			}
 			if (request.method === 'GET' && ['/sign-in', '/owner-ready'].includes(url.pathname)) {
+				const resumedAuthorization = new URL(
+					'/api/auth/oauth2/authorize',
+					configuration.configuration.issuer,
+				);
+				resumedAuthorization.search = url.search;
+				// Validated before any session read, so a refused continuation has no effect.
+				const pageContinuation = ownerAuthorizationResume(
+					url.searchParams.get('authorize') ??
+						(url.searchParams.has('client_id') ? resumedAuthorization.toString() : null),
+					configuration.configuration,
+				);
+				if (pageContinuation.kind === 'refused') return invalidRequestResponse();
 				let createOrganization = false;
 				let organizationSetup:
 					| { readonly organizationId: string; readonly state: OrganizationFleetState }
@@ -284,11 +299,6 @@ export function createSignInHttpHandler(
 										: 'confirm';
 					}
 				}
-				const resumedAuthorization = new URL(
-					'/api/auth/oauth2/authorize',
-					configuration.configuration.issuer,
-				);
-				resumedAuthorization.search = url.search;
 				return minimalOwnerPage({
 					crypto: configuration.platform.crypto,
 					memberships,
@@ -299,20 +309,15 @@ export function createSignInHttpHandler(
 					createOrganization,
 					ready: url.pathname === '/owner-ready',
 					configuration: configuration.configuration,
-					resume: ownerAuthorizationResume(
-						url.searchParams.get('authorize') ??
-							(url.searchParams.has('client_id') ? resumedAuthorization.toString() : null),
-						configuration.configuration,
-					),
+					resume: pageContinuation.kind === 'resume' ? pageContinuation.authorization : null,
 				});
 			}
 			const body =
 				url.pathname === '/api/auth/oauth2/token'
 					? new URLSearchParams(await request.clone().text())
 					: undefined;
-			const basic = request.headers.get('authorization')?.match(/^Basic ([^\s]+)$/iu)?.[1];
 			const tokenClientId =
-				body?.get('client_id') ?? (basic === undefined ? undefined : atob(basic).split(':')[0]);
+				body?.get('client_id') ?? basicClientId(request.headers.get('authorization'));
 			const providerProps = {
 				...configuration,
 				requestState: state,
@@ -433,5 +438,33 @@ export function createSignInHttpHandler(
 				),
 			);
 		}
+	}
+}
+
+/**
+ * The handler's generic client-input refusal, as its owner-page forwarding routes give before any
+ * effect (`fleet-admin-forwarding.ts`): 400 `invalid-request`, no store, no cookie.
+ */
+function invalidRequestResponse(): Response {
+	return Response.json(
+		{ error: 'invalid-request' },
+		{ status: 400, headers: { 'cache-control': 'no-store' } },
+	);
+}
+
+/**
+ * The client an `Authorization` header names as a Basic credential, decoded by the provider's own
+ * decoder (`@better-auth/core` 1.7.11 `dist/oauth2/basic-credentials.mjs:48-60`, which the
+ * oauth-provider's client authentication also uses), so this wrapper and the provider never disagree
+ * on which client a header names. A header that decoder refuses names none here, and the provider
+ * then refuses it itself as `invalid_client` with a Basic challenge (oauth-provider 1.7.11
+ * `dist/utils-vIo_wPv5.mjs:607-621`).
+ */
+function basicClientId(authorization: string | null): string | undefined {
+	if (authorization === null) return undefined;
+	try {
+		return decodeBasicCredentials(authorization).clientId;
+	} catch {
+		return undefined;
 	}
 }
