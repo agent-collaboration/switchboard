@@ -61,3 +61,48 @@ it('reconstructs generated multipage lists within the independently serialized U
 		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);
 });
+
+it('accepts generated variable-sized pages exactly at the serialized byte limit', () => {
+	hegel.test(
+		(tc) => {
+			const count = tc.draw(generators.integers({ minValue: 2, maxValue: 7 }));
+			const unicode = tc.draw(generators.sampledFrom(['雪', '🐈', '"', '\\']));
+			const length = tc.draw(generators.integers({ minValue: 1000, maxValue: 50000 }));
+			const first: Tool = {
+				name: 'first',
+				inputSchema: { type: 'object' },
+				description: unicode.repeat(length),
+			};
+			const second: Tool = { name: 'second', inputSchema: { type: 'object' }, description: '' };
+			const rest: Tool[] = Array.from({ length: count }, (_, index) => ({
+				name: `later-${index}`,
+				inputSchema: { type: 'object' },
+				description: 'z'.repeat(index + 1),
+			}));
+			const template = {
+				tools: [first, second],
+				cacheScope: 'private',
+				ttlMs: 60000,
+				nextCursor: '2',
+			};
+			const overhead = new TextEncoder().encode(JSON.stringify(template)).byteLength;
+			const adjusted = { ...second, description: 'x'.repeat(1024 * 1024 - overhead) };
+			const tools = [first, adjusted, ...rest];
+			tc.note(
+				`count=${count} unicode=${JSON.stringify(unicode)} length=${length} padding=${adjusted.description.length}`,
+			);
+			const page = paginateMcpTools(tools);
+			expect(new TextEncoder().encode(JSON.stringify(page)).byteLength).toBe(1048576);
+			expect(page.tools).toEqual([first, adjusted]);
+			expect(page.nextCursor).toBe('2');
+			expect(paginateMcpTools(tools, String(tools.length))).toEqual({
+				tools: [],
+				cacheScope: 'private',
+				ttlMs: 60000,
+			});
+			for (const cursor of ['', '-1', 'nope'])
+				expect(() => paginateMcpTools(tools, cursor)).toThrow();
+		},
+		{ testCases: 500, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
+	);
+});

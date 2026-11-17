@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 
 import {
 	authorizeModeledTransaction,
+	bindModeledTransaction,
 	completeModeledCallback,
 	consumeModeledCallback,
 	createCeremonyModel,
@@ -54,9 +55,9 @@ function finishModeledCompletion(state: CeremonyModelState, entry: ModelCompleti
 
 function assertRetainedCeremonies(state: CeremonyModelState): void {
 	for (const entry of state.transactions) {
-		expect(state.store.getTransaction(entry.handle.transactionId)?.kind).toBe(
-			entry.phase === 'removed' ? undefined : entry.phase,
-		);
+		const actualTransaction = state.store.getTransaction(entry.handle.transactionId);
+		expect(actualTransaction?.kind).toBe(entry.phase === 'removed' ? undefined : entry.phase);
+		if (entry.phase !== 'removed') expect(actualTransaction?.identity).toEqual(entry.identity);
 		const completion = state.completions.find(
 			(candidate: ModelCompletion): boolean =>
 				candidate.phase !== 'removed' &&
@@ -90,6 +91,15 @@ const ceremonyMachine: hegel.stateful.StateMachine<CeremonyModelState> = {
 			const ownerInitiated = testCase.draw(generators.booleans());
 			testCase.note(JSON.stringify({ ownerInitiated, nowMs: state.clock.nowMs }));
 			createModeledTransaction(state, ownerInitiated);
+		},
+		bindPrincipal: (testCase: hegel.TestCase, state: CeremonyModelState): void => {
+			const entry = drawTransaction(testCase, state);
+			const fault = testCase.draw(
+				generators.sampledFrom(['none', 'issuer', 'subject'] satisfies readonly BrowserFault[]),
+			);
+			testCase.note(`bind principal fault=${fault}`);
+			if (entry !== undefined)
+				bindModeledTransaction(state, entry, principalWithFault(fault, entry.identity));
 		},
 		authorize: (testCase: hegel.TestCase, state: CeremonyModelState): void => {
 			const entry = drawTransaction(testCase, state);
@@ -145,22 +155,29 @@ const ceremonyMachine: hegel.stateful.StateMachine<CeremonyModelState> = {
 			const fault = testCase.draw(
 				generators.sampledFrom(['none', 'issuer', 'subject'] satisfies readonly BrowserFault[]),
 			);
+			const identity = principalWithFault(fault);
 			let expectedCount = 0;
-			if (fault === 'none') {
-				for (const entry of state.transactions) {
-					if (entry.phase !== 'removed') {
-						entry.phase = 'removed';
-						expectedCount++;
-					}
-				}
-				for (const entry of state.completions) {
-					if (entry.phase === 'awaiting-account-confirmation') {
-						discardModeledCompletion(state, entry);
-						expectedCount++;
-					}
+			for (const entry of state.transactions) {
+				if (
+					entry.phase !== 'removed' &&
+					entry.identity?.issuer === identity.issuer &&
+					entry.identity.subject === identity.subject
+				) {
+					entry.phase = 'removed';
+					expectedCount++;
 				}
 			}
-			expect(state.store.cancelBrowserCeremonies(principalWithFault(fault))).toBe(expectedCount);
+			for (const entry of state.completions) {
+				if (
+					entry.phase === 'awaiting-account-confirmation' &&
+					entry.handle.identity.issuer === identity.issuer &&
+					entry.handle.identity.subject === identity.subject
+				) {
+					discardModeledCompletion(state, entry);
+					expectedCount++;
+				}
+			}
+			expect(state.store.cancelBrowserCeremonies(identity)).toBe(expectedCount);
 		},
 		finishCompletion: (testCase: hegel.TestCase, state: CeremonyModelState): void => {
 			const entry = drawCompletion(testCase, state);
@@ -200,6 +217,7 @@ function exercisePrincipalAndFirstUse(state: CeremonyModelState): void {
 	const transaction = createModeledTransaction(state, false);
 	if (transaction === undefined)
 		throw new Error('Empty ceremony model could not create a transaction.');
+	bindModeledTransaction(state, transaction, modelPrincipal);
 	for (const fault of ['subject', 'issuer'] satisfies readonly BrowserFault[]) {
 		expect((): unknown =>
 			state.store.bindBrowserIdentity({
@@ -239,6 +257,7 @@ function exerciseCapacityAndExpiry(state: CeremonyModelState): void {
 		const transaction = createModeledTransaction(state, index % 2 === 0);
 		if (transaction === undefined)
 			throw new Error('Sequential completions must leave transaction capacity.');
+		bindModeledTransaction(state, transaction, modelPrincipal);
 		authorizeModeledTransaction(state, transaction);
 		consumeModeledCallback(state, transaction, 'none');
 		completeModeledCallback(state, transaction);
@@ -262,6 +281,7 @@ function exerciseCapacityAndExpiry(state: CeremonyModelState): void {
 	assertRetainedCeremonies(state);
 	const transaction = createModeledTransaction(state, false);
 	if (transaction === undefined) throw new Error('Expiry must free transaction capacity.');
+	bindModeledTransaction(state, transaction, modelPrincipal);
 	authorizeModeledTransaction(state, transaction);
 	state.clock.nowMs = transaction.expiresAtMs;
 	consumeModeledCallback(state, transaction, 'none');
@@ -284,6 +304,7 @@ function exerciseCancellation(state: CeremonyModelState): void {
 		expect(state.store.cancelPendingTransaction(input)).toBe(false);
 		const consuming = createModeledTransaction(state, ownerInitiated);
 		if (consuming === undefined) throw new Error('Cancellation must free transaction capacity.');
+		bindModeledTransaction(state, consuming, modelPrincipal);
 		authorizeModeledTransaction(state, consuming);
 		consumeModeledCallback(state, consuming, 'none');
 		const consumingInput = { transactionId: consuming.handle.transactionId, agentId: 'hermes' };
@@ -301,18 +322,54 @@ function exerciseCancellation(state: CeremonyModelState): void {
 	}
 }
 
+function exerciseUnboundTransactions(
+	state: CeremonyModelState,
+	firstPrincipal: ReturnType<typeof principalWithFault>,
+): void {
+	for (const ownerInitiated of [false, true]) {
+		const transaction = createModeledTransaction(state, ownerInitiated);
+		if (transaction === undefined)
+			throw new Error('Unbound setup requires empty transaction capacity.');
+		expect(state.store.getTransaction(transaction.handle.transactionId)?.identity).toBeUndefined();
+		// A callback before authorization is wrong-state, rather than an identity comparison.
+		for (const fault of ['none', 'subject', 'issuer', 'browser'] satisfies readonly BrowserFault[])
+			consumeModeledCallback(state, transaction, fault);
+		authorizeModeledTransaction(state, transaction);
+		// Browser logout cannot remove a ceremony that has no verified browser principal yet.
+		expect(state.store.cancelBrowserCeremonies(modelPrincipal)).toBe(0);
+		if (ownerInitiated) {
+			for (const fault of ['subject', 'issuer'] satisfies readonly BrowserFault[])
+				bindModeledTransaction(state, transaction, principalWithFault(fault));
+		}
+		const identity = ownerInitiated ? modelPrincipal : firstPrincipal;
+		bindModeledTransaction(state, transaction, identity);
+		bindModeledTransaction(state, transaction, identity);
+		for (const fault of ['subject', 'issuer'] satisfies readonly BrowserFault[])
+			bindModeledTransaction(state, transaction, principalWithFault(fault, identity));
+		authorizeModeledTransaction(state, transaction);
+		consumeModeledCallback(state, transaction, 'none');
+		const completion = completeModeledCallback(state, transaction);
+		if (completion === undefined)
+			throw new Error('Unbound setup requires empty completion capacity.');
+		decideModeledCompletion(state, completion, 'none', true);
+		assertRetainedCeremonies(state);
+	}
+}
+
 it('M2 transaction and completion principals, first use, cancellation, caps and expiry follow the sequential model', async (): Promise<void> => {
 	await hegel.testAsync(
 		async (testCase: hegel.TestCase): Promise<void> => {
 			// Arrange
 			const state = createCeremonyModel({
-				capacity: testCase.draw(generators.integers({ minValue: 1, maxValue: 4 })),
+				maxTransactions: testCase.draw(generators.integers({ minValue: 1, maxValue: 4 })),
+				maxCompletionSessions: testCase.draw(generators.integers({ minValue: 1, maxValue: 4 })),
 				transactionTtlMs: testCase.draw(generators.integers({ minValue: 1, maxValue: 30 })),
 				completionTtlMs: testCase.draw(generators.integers({ minValue: 1, maxValue: 30 })),
 			});
 			testCase.note(
 				JSON.stringify({
-					capacity: state.maxTransactions,
+					maxTransactions: state.maxTransactions,
+					maxCompletionSessions: state.maxCompletions,
 					transactionTtlMs: state.transactionTtlMs,
 					completionTtlMs: state.completionTtlMs,
 				}),
@@ -322,6 +379,72 @@ it('M2 transaction and completion principals, first use, cancellation, caps and 
 			exerciseCapacityAndExpiry(state);
 			// Act / Assert: the independent model checks every retained record after every step.
 			await hegel.stateful.runAsync(testCase, ceremonyMachine, state, { stepCount: 50 });
+		},
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
+	);
+});
+
+it('M2 explicit principal binding preserves unbound callback and cancellation rules', async (): Promise<void> => {
+	await hegel.testAsync(
+		async (testCase: hegel.TestCase): Promise<void> => {
+			const state = createCeremonyModel({
+				maxTransactions: testCase.draw(generators.integers({ minValue: 1, maxValue: 4 })),
+				maxCompletionSessions: testCase.draw(generators.integers({ minValue: 1, maxValue: 4 })),
+				transactionTtlMs: testCase.draw(generators.integers({ minValue: 1, maxValue: 30 })),
+				completionTtlMs: testCase.draw(generators.integers({ minValue: 1, maxValue: 30 })),
+			});
+			const firstPrincipal = {
+				issuer: `https://identity-${testCase.draw(generators.integers({ minValue: 0, maxValue: 100 }))}.example.test`,
+				subject: `synthetic-${testCase.draw(generators.text({ alphabet: 'ab09資料é', minSize: 1, maxSize: 24 }))}`,
+			};
+			testCase.note(
+				JSON.stringify({
+					firstPrincipal,
+					maxTransactions: state.maxTransactions,
+					maxCompletionSessions: state.maxCompletions,
+				}),
+			);
+			exerciseUnboundTransactions(state, firstPrincipal);
+			exerciseCancellation(state);
+			await hegel.stateful.runAsync(testCase, ceremonyMachine, state, { stepCount: 50 });
+		},
+		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
+	);
+});
+
+async function exerciseUnequalCapacitySequence(
+	testCase: hegel.TestCase,
+	limits: { readonly maxTransactions: number; readonly maxCompletionSessions: number },
+): Promise<void> {
+	const state = createCeremonyModel({
+		...limits,
+		transactionTtlMs: testCase.draw(generators.integers({ minValue: 1, maxValue: 30 })),
+		completionTtlMs: testCase.draw(generators.integers({ minValue: 1, maxValue: 30 })),
+	});
+	testCase.note(
+		JSON.stringify({
+			...limits,
+			transactionTtlMs: state.transactionTtlMs,
+			completionTtlMs: state.completionTtlMs,
+		}),
+	);
+	exerciseCapacityAndExpiry(state);
+	await hegel.stateful.runAsync(testCase, ceremonyMachine, state, { stepCount: 50 });
+}
+
+it('M2 enforces independent unequal transaction and completion capacities without swapping limits', async (): Promise<void> => {
+	await hegel.testAsync(
+		async (testCase: hegel.TestCase): Promise<void> => {
+			const smallerLimit = testCase.draw(generators.integers({ minValue: 1, maxValue: 2 }));
+			const largerLimit = testCase.draw(generators.integers({ minValue: 3, maxValue: 4 }));
+			await exerciseUnequalCapacitySequence(testCase, {
+				maxTransactions: smallerLimit,
+				maxCompletionSessions: largerLimit,
+			});
+			await exerciseUnequalCapacitySequence(testCase, {
+				maxTransactions: largerLimit,
+				maxCompletionSessions: smallerLimit,
+			});
 		},
 		{ testCases: 100, seed: 20261117, derandomize: true, database: hegel.Database.disabled },
 	);

@@ -31,6 +31,7 @@ export interface ModelTransaction {
 	readonly handle: OAuthCeremonyTransaction;
 	readonly expiresAtMs: number;
 	readonly ownerInitiated: boolean;
+	identity?: OAuthBrowserSessionIdentity;
 	phase: 'selecting-permissions' | 'authorizing-application' | 'consuming-callback' | 'removed';
 	authorizing?: AuthorizingTransaction;
 }
@@ -55,7 +56,8 @@ export interface CeremonyModelState {
 }
 
 export function createCeremonyModel(props: {
-	readonly capacity: number;
+	readonly maxTransactions: number;
+	readonly maxCompletionSessions: number;
 	readonly transactionTtlMs: number;
 	readonly completionTtlMs: number;
 }): CeremonyModelState {
@@ -66,16 +68,16 @@ export function createCeremonyModel(props: {
 		store: createOAuthTransactionStore({
 			now: (): number => clock.nowMs,
 			providerGrantSchema: syntheticGrantSchema,
-			maxTransactions: props.capacity,
-			maxCompletionSessions: props.capacity,
+			maxTransactions: props.maxTransactions,
+			maxCompletionSessions: props.maxCompletionSessions,
 			transactionTtlMs: props.transactionTtlMs,
 			completionSessionTtlMs: props.completionTtlMs,
 			onDiscardProviderGrant: (grant: SyntheticGrant): void => {
 				observedDiscards.push(grant.receipt);
 			},
 		}),
-		maxTransactions: props.capacity,
-		maxCompletions: props.capacity,
+		maxTransactions: props.maxTransactions,
+		maxCompletions: props.maxCompletionSessions,
 		transactionTtlMs: props.transactionTtlMs,
 		completionTtlMs: props.completionTtlMs,
 		transactions: [],
@@ -145,18 +147,52 @@ export function createModeledTransaction(
 	}
 	const created = state.store.createTransaction(input);
 	expect(created.expiresAtMs).toBe(state.clock.nowMs + state.transactionTtlMs);
-	const bound = state.store.bindBrowserIdentity({
-		transactionId: created.transactionId,
-		identity: modelPrincipal,
-	});
 	const entry: ModelTransaction = {
-		handle: bound,
+		handle: created,
 		ownerInitiated,
 		expiresAtMs: state.clock.nowMs + state.transactionTtlMs,
 		phase: 'selecting-permissions',
 	};
 	state.transactions.push(entry);
 	return entry;
+}
+
+export function bindModeledTransaction(
+	state: CeremonyModelState,
+	entry: ModelTransaction,
+	identity: OAuthBrowserSessionIdentity,
+): void {
+	const bind = (): unknown =>
+		state.store.bindBrowserIdentity({ transactionId: entry.handle.transactionId, identity });
+	if (entry.phase !== 'selecting-permissions') {
+		expect(bind).toThrow('OAuth transaction is not selecting permissions.');
+		return;
+	}
+	if (entry.expiresAtMs <= state.clock.nowMs) {
+		expect(bind).toThrow('OAuth transaction expired.');
+		entry.phase = 'removed';
+		return;
+	}
+	if (
+		entry.identity !== undefined &&
+		(entry.identity.issuer !== identity.issuer || entry.identity.subject !== identity.subject)
+	) {
+		expect(bind).toThrow('OAuth transaction is already bound to another browser session.');
+		return;
+	}
+	if (
+		entry.ownerInitiated &&
+		(identity.issuer !== modelPrincipal.issuer || identity.subject !== modelPrincipal.subject)
+	) {
+		expect(bind).toThrow('OAuth transaction belongs to another website owner.');
+		return;
+	}
+	const bound = state.store.bindBrowserIdentity({
+		transactionId: entry.handle.transactionId,
+		identity,
+	});
+	expect(bound.identity).toEqual(identity);
+	entry.identity = identity;
 }
 
 export function authorizeModeledTransaction(
@@ -185,7 +221,14 @@ export function authorizeModeledTransaction(
 		entry.phase = 'removed';
 		return;
 	}
+	if (entry.identity === undefined) {
+		expect((): unknown => state.store.beginApplicationAuthorization(input)).toThrow(
+			'OAuth transaction has no verified browser session.',
+		);
+		return;
+	}
 	entry.authorizing = state.store.beginApplicationAuthorization(input);
+	expect(entry.authorizing.identity).toEqual(entry.identity);
 	entry.phase = 'authorizing-application';
 }
 
@@ -198,10 +241,13 @@ export type BrowserFault =
 	| 'state'
 	| 'redirect';
 
-export function principalWithFault(fault: BrowserFault): OAuthBrowserSessionIdentity {
+export function principalWithFault(
+	fault: BrowserFault,
+	identity: OAuthBrowserSessionIdentity = modelPrincipal,
+): OAuthBrowserSessionIdentity {
 	return {
-		issuer: fault === 'issuer' ? 'https://foreign.example.test' : modelPrincipal.issuer,
-		subject: fault === 'subject' ? 'another-synthetic-owner' : modelPrincipal.subject,
+		issuer: fault === 'issuer' ? `${identity.issuer}/foreign` : identity.issuer,
+		subject: fault === 'subject' ? `${identity.subject}.other` : identity.subject,
 	};
 }
 
@@ -216,7 +262,7 @@ export function consumeModeledCallback(
 ): void {
 	const input = {
 		transactionId: entry.handle.transactionId,
-		identity: principalWithFault(fault),
+		identity: principalWithFault(fault, entry.identity),
 		browserBindingSecret:
 			fault === 'browser'
 				? differentSecret(entry.handle.browserBindingSecret)
@@ -285,6 +331,7 @@ export function completeModeledCallback(
 		return undefined;
 	}
 	if (result.kind !== 'created') throw new Error('Expected a completion below modeled capacity.');
+	expect(result.session.identity).toEqual(entry.identity);
 	expect(result.session.expiresAtMs).toBe(state.clock.nowMs + state.completionTtlMs);
 	entry.phase = 'removed';
 	const completion: ModelCompletion = {
@@ -306,7 +353,7 @@ export function decideModeledCompletion(
 ): void {
 	const input = {
 		completionSessionId: entry.handle.completionSessionId,
-		identity: principalWithFault(fault),
+		identity: principalWithFault(fault, entry.handle.identity),
 		browserBindingSecret:
 			fault === 'browser'
 				? differentSecret(entry.handle.browserBindingSecret)

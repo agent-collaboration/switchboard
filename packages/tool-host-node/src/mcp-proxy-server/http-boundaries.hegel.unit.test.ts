@@ -144,3 +144,79 @@ it('accepts only origin-form request targets at the policy boundary', () => {
 		}
 	}, settings);
 });
+
+it('keeps adversarial Host and Origin authorities distinct while accepting their canonical forms', () => {
+	hegel.test((tc) => {
+		const longLabel = 'a'.repeat(tc.draw(generators.integers({ minValue: 64, maxValue: 300 })));
+		const cases = [
+			{
+				configured: 'example.test',
+				accepted: 'EXAMPLE.TEST:4321',
+				rejected: [
+					'exаmple.test',
+					'example.test.',
+					'user@example.test',
+					`${longLabel}.example.test`,
+				],
+			},
+			{
+				configured: 'example.test.',
+				accepted: 'EXAMPLE.TEST.:4321',
+				rejected: ['example.test', 'user@example.test.', 'example.test.evil'],
+			},
+			{
+				configured: '::1',
+				accepted: '[0:0:0:0:0:0:0:1]:4321',
+				rejected: ['[::2]:4321', 'user@[::1]', '[::1].evil'],
+			},
+			{
+				configured: `${longLabel}.example.test`,
+				accepted: `${longLabel.toUpperCase()}.example.test:4321`,
+				rejected: [`${longLabel}b.example.test`, `user@${longLabel}.example.test`],
+			},
+		];
+		const selected = tc.draw(generators.sampledFrom(cases));
+		tc.note(JSON.stringify(selected));
+		const hostPolicy = compileNodeHostHttpRequestPolicy({
+			allowedHosts: [selected.configured],
+			allowedOrigins: [],
+		});
+		expect(
+			nodeHostHttpRequestIsAllowed(
+				requestWithHeaders({ host: selected.accepted, target: '/' }),
+				hostPolicy,
+			),
+		).toBe(true);
+		for (const host of selected.rejected)
+			expect(
+				nodeHostHttpRequestIsAllowed(requestWithHeaders({ host, target: '/' }), hostPolicy),
+			).toBe(false);
+		const originHost = selected.configured === '::1' ? '[::1]' : selected.configured;
+		const originPolicy = compileNodeHostHttpRequestPolicy({
+			allowedHosts: ['localhost'],
+			allowedOrigins: [`http://${originHost}:4321`],
+		});
+		expect(
+			nodeHostHttpRequestIsAllowed(
+				requestWithHeaders({
+					host: 'localhost',
+					origin: `http://${originHost.toUpperCase()}:4321/`,
+					target: '/',
+				}),
+				originPolicy,
+			),
+		).toBe(true);
+		for (const origin of [
+			`http://user@${originHost}:4321`,
+			`https://${originHost}:4321`,
+			`http://${originHost}:4322`,
+			...selected.rejected.map((host) => `http://${host}:4321`),
+		])
+			expect(
+				nodeHostHttpRequestIsAllowed(
+					requestWithHeaders({ host: 'localhost', origin, target: '/' }),
+					originPolicy,
+				),
+			).toBe(false);
+	}, settings);
+});

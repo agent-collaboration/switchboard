@@ -19,7 +19,7 @@ const settings = {
 it('applies AND predicates, OR alternatives, and deny before ask and baseline', () => {
 	hegel.test((tc) => {
 		const force = tc.draw(generators.integers({ minValue: 0, maxValue: 2 }));
-		const format = tc.draw(generators.integers({ minValue: 0, maxValue: 2 }));
+		const format = tc.draw(generators.integers({ minValue: 0, maxValue: 3 }));
 		const publish = tc.draw(generators.integers({ minValue: 0, maxValue: 1 })) === 1;
 		const deny = tc.draw(generators.integers({ minValue: 0, maxValue: 1 })) === 1;
 		const baselineIndex = tc.draw(generators.integers({ minValue: 0, maxValue: 2 }));
@@ -31,7 +31,9 @@ it('applies AND predicates, OR alternatives, and deny before ask and baseline', 
 			'edit',
 			'../ordinary',
 			...(force === 0 ? [] : [force === 1 ? '-f' : '--force']),
-			...(format === 0 ? [] : [format === 1 ? '--format=json' : '--format=text']),
+			...(format === 0
+				? []
+				: [format === 1 ? '--format=json' : format === 2 ? '--format=text' : '--format=xml']),
 			...(publish ? ['--publish'] : []),
 		];
 		tc.note(JSON.stringify({ argv, deny, baseline }));
@@ -51,7 +53,7 @@ it('applies AND predicates, OR alternatives, and deny before ask and baseline', 
 				withoutApproval: 'remaining_admitted',
 			},
 		});
-		const matched = force !== 0 && format !== 0;
+		const matched = force !== 0 && (format === 1 || format === 2);
 		const expected =
 			baseline === 'deny' || (deny && matched)
 				? 'deny'

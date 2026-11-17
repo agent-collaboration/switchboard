@@ -162,6 +162,68 @@ describe('P5 Google grants against independent literal catalog rules', () => {
 		}, propertySettings);
 	});
 
+	it('checks every selection against nonempty strict partial ceilings including later selected groups', () => {
+		hegel.test((testCase: hegel.TestCase): void => {
+			// Arrange: the first selected group is in the ceiling, but a later one is excluded.
+			const complete = drawCompleteSelection(testCase);
+			const excludedGroup = testCase.draw(generators.sampledFrom(complete.ceiling));
+			const eligibleGroups = complete.ceiling.filter(
+				(groupId: string): boolean => groupId !== excludedGroup,
+			);
+			const allowedGroup = testCase.draw(generators.sampledFrom(eligibleGroups));
+			const ceiling = [
+				...new Set([
+					allowedGroup,
+					...testCase.draw(
+						generators.arrays(generators.sampledFrom(eligibleGroups), {
+							maxSize: eligibleGroups.length,
+						}),
+					),
+				]),
+			];
+			const selectedGroupIds = [allowedGroup, ...complete.selectedGroupIds, excludedGroup];
+			const selectionInput = { familyId: complete.familyId, groupIds: selectedGroupIds, ceiling };
+			const unrestricted = literalSelectionModel({ ...selectionInput, ceiling: complete.ceiling });
+			if (unrestricted.kind === 'refused')
+				throw new Error('Known-family literal groups must compile without the reduced ceiling.');
+			const grantInput = {
+				...complete,
+				selectedGroupIds,
+				ceiling,
+				actualScopes: [...literalIdentityScopes, ...unrestricted.scopes],
+			};
+			testCase.note(JSON.stringify({ excludedGroup, allowedGroup, selectionInput, grantInput }));
+
+			// Act / Assert: neither a nonempty-ceiling check nor a first-selection-only check suffices.
+			expect(ceiling.length).toBeGreaterThan(0);
+			expect(ceiling.length).toBeLessThan(complete.ceiling.length);
+			expect(literalSelectionModel(selectionInput)).toEqual({ kind: 'refused' });
+			expect((): unknown => compileGooglePermissionSelection(selectionInput)).toThrow();
+			expect(literalGrantModel(grantInput)).toEqual({ kind: 'unavailable' });
+			expect(evaluateGoogleOperationGrant(grantInput)).toEqual({ kind: 'unavailable' });
+
+			// Contained selections compile under a strict partial ceiling and after an unselected entry.
+			const controlGroups = complete.ceiling.filter(
+				(groupId: string): boolean => groupId !== allowedGroup,
+			);
+			const unselectedFirst = testCase.draw(generators.sampledFrom(controlGroups));
+			for (const validCeiling of [[allowedGroup], [unselectedFirst, allowedGroup]]) {
+				const validInput = {
+					familyId: complete.familyId,
+					groupIds: [allowedGroup],
+					ceiling: validCeiling,
+				};
+				const validExpected = literalSelectionModel(validInput);
+				if (validExpected.kind === 'refused')
+					throw new Error('Contained selection must compile under the literal ceiling model.');
+				testCase.note(JSON.stringify({ validInput, validExpected }));
+				const validActual = compileGooglePermissionSelection(validInput);
+				expect(validActual.scopes).toEqual(validExpected.scopes);
+				expect(validActual.effects).toEqual(validExpected.effects);
+			}
+		}, propertySettings);
+	});
+
 	it('refuses missing, surplus and substituted exact-scope evidence', () => {
 		hegel.test((testCase: hegel.TestCase): void => {
 			// Arrange

@@ -24,30 +24,30 @@ interface RemovalScenario {
 	readonly agents: readonly AgentModel[];
 }
 type BeginIntent = Parameters<AgentManagementAuthority['beginAgentRemoval']>[2];
+type RemovalRefusalReason =
+	| 'Agent removal prevents admission'
+	| 'Pending membership replacement conflicts'
+	| 'Pending membership operation conflicts'
+	| 'Membership operation intent conflicts'
+	| 'Retired client cannot be changed'
+	| 'Membership operation conflicts'
+	| 'Membership still active';
 type BeginDecision =
-	| { readonly kind: 'refused' }
+	| { readonly kind: 'refused'; readonly reason: RemovalRefusalReason }
 	| { readonly kind: 'accepted'; readonly removal: AgentRemoval };
 
-const removalConflictMessages = [
-	'Agent removal prevents admission',
-	'Pending membership replacement conflicts',
-	'Pending membership operation conflicts',
-	'Membership operation intent conflicts',
-	'Retired client cannot be changed',
-	'Membership operation conflicts',
-	'Membership still active',
-] as const;
-
-async function expectConflict(action: Promise<unknown>): Promise<void> {
+async function expectConflict(
+	action: Promise<unknown>,
+	expectedReason: RemovalRefusalReason,
+): Promise<void> {
 	let refused = false;
 	try {
 		await action;
 	} catch (error: unknown) {
-		if (
-			!(error instanceof Error) ||
-			!removalConflictMessages.some((message) => error.message === message)
-		)
-			throw error;
+		if (!(error instanceof Error)) throw error;
+		expect(error.message, 'the refusal must identify the violated transition rule').toBe(
+			expectedReason,
+		);
 		refused = true;
 	}
 	expect(refused, 'the authority must refuse this transition').toBe(true);
@@ -75,16 +75,28 @@ function decideBegin(agent: AgentModel, requestId: string, intent: BeginIntent):
 			previous.requestId === intent.replacesPendingRequestId &&
 			requestId !== previous.requestId
 			? { kind: 'accepted', removal: pending }
-			: { kind: 'refused' };
+			: { kind: 'refused', reason: 'Pending membership replacement conflicts' };
 	}
 	if (previous === null) return { kind: 'accepted', removal: pending };
 	if (previous.requestId === requestId) {
 		return previous.operation === intent.operation
 			? { kind: 'accepted', removal: previous }
-			: { kind: 'refused' };
+			: {
+					kind: 'refused',
+					reason:
+						previous.kind === 'pending'
+							? 'Pending membership operation conflicts'
+							: 'Membership operation intent conflicts',
+				};
 	}
-	if (previous.operation === 'disable') return { kind: 'refused' };
-	if (previous.kind === 'pending' && intent.operation === 'unlink') return { kind: 'refused' };
+	// A pending operation owns the conflict even when it is also a retirement.
+	if (
+		previous.kind === 'pending' &&
+		(previous.operation === 'disable' || intent.operation === 'unlink')
+	)
+		return { kind: 'refused', reason: 'Pending membership operation conflicts' };
+	if (previous.operation === 'disable')
+		return { kind: 'refused', reason: 'Retired client cannot be changed' };
 	return { kind: 'accepted', removal: pending };
 }
 
@@ -100,7 +112,7 @@ async function admitAgent(
 	const persona = tc.draw(generators.sampledFrom(['reader', 'operator', 'é-reader']));
 	tc.note(`admit ${agent.clientId} persona=${persona} removal=${JSON.stringify(agent.removal)}`);
 	const action = scenario.authority.setMembership(agent.clientId, persona);
-	if (!canAdmit(agent)) await expectConflict(action);
+	if (!canAdmit(agent)) await expectConflict(action, 'Agent removal prevents admission');
 	else {
 		await action;
 		agent.persona = persona;
@@ -122,7 +134,7 @@ async function beginRemoval(props: {
 	const action = scenario.authority.beginAgentRemoval(agent.clientId, requestId, intent);
 	switch (expected.kind) {
 		case 'refused':
-			await expectConflict(action);
+			await expectConflict(action, expected.reason);
 			return;
 		case 'accepted':
 			expect(await action).toEqual(expected.removal);
@@ -197,7 +209,7 @@ const removalMachine: hegel.stateful.StateMachine<RemovalScenario> = {
 			const { requestId, operation } = agent.removal;
 			tc.note(`complete ${agent.clientId} ${requestId} ${operation} persona=${agent.persona}`);
 			const action = scenario.authority.completeAgentRemoval(agent.clientId, requestId, operation);
-			if (agent.persona !== null) await expectConflict(action);
+			if (agent.persona !== null) await expectConflict(action, 'Membership still active');
 			else {
 				await action;
 				agent.removal = { kind: 'complete', requestId, operation };
@@ -215,6 +227,7 @@ const removalMachine: hegel.stateful.StateMachine<RemovalScenario> = {
 			tc.note(`conflicting complete ${agent.clientId} ${agent.removal.requestId} ${operation}`);
 			await expectConflict(
 				scenario.authority.completeAgentRemoval(agent.clientId, agent.removal.requestId, operation),
+				'Membership operation conflicts',
 			);
 		},
 	},
@@ -234,7 +247,7 @@ const removalMachine: hegel.stateful.StateMachine<RemovalScenario> = {
 				);
 			},
 		},
-		pendingRemovalAndDisableRefuseAdmission: {
+		pendingRemovalAndDisableRefuseAdmissionWithExpectedReason: {
 			alwaysCheck: true,
 			check: async (tc, scenario) => {
 				await Promise.all(
@@ -243,6 +256,7 @@ const removalMachine: hegel.stateful.StateMachine<RemovalScenario> = {
 						tc.note(`forbidden admission probe ${agent.clientId} ${JSON.stringify(agent.removal)}`);
 						await expectConflict(
 							scenario.authority.setMembership(agent.clientId, 'forbidden-reader'),
+							'Agent removal prevents admission',
 						);
 						expect(await scenario.authority.readMembership(agent.clientId)).toBeNull();
 						expect(await scenario.authority.readAgentRemoval(agent.clientId)).toEqual(

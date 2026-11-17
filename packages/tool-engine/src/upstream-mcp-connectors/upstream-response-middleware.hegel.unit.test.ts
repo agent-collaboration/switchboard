@@ -108,3 +108,61 @@ it('redacts parsed values recursively and catalog values only by exact match', (
 		});
 	}, settings);
 });
+
+it('redacts arbitrary nonempty single exact credentials', () => {
+	hegel.test((tc) => {
+		const secret = tc.draw(
+			generators.text({ alphabet: 'abcxyz0129-_/.:雪é"\\\n', minSize: 1, maxSize: 80 }),
+		);
+		tc.note(`credential=${JSON.stringify(secret)}`);
+		expect(redactExactCredentialText(secret, { exactValues: [secret] })).toBe('[REDACTED]');
+		expect(redactExactCredentialText('UNCHANGED', { exactValues: [secret] })).toBe('UNCHANGED');
+	}, settings);
+});
+
+it('redacts generated values in recognized patterns', () => {
+	hegel.test((tc) => {
+		const secret = tc.draw(
+			generators.text({ alphabet: 'abcXYZ0129._~+/=-', minSize: 1, maxSize: 80 }),
+		);
+		tc.note(`credential=${JSON.stringify(secret)}`);
+		for (const prefix of ['Bearer ', 'Basic ', 'api_key=', 'token=', 'password=', 'secret='])
+			expect(redactCredentialText(`${prefix}${secret}`)).toBe('[REDACTED]');
+	}, settings);
+});
+
+it('redacts arbitrary values at nested credential keys', () => {
+	hegel.test((tc) => {
+		const secret = tc.draw(
+			generators.text({ alphabet: 'abcxyz0129-_/.:雪é"\\\n', minSize: 1, maxSize: 80 }),
+		);
+		const key = tc.draw(
+			generators.sampledFrom([
+				'authorization',
+				'x-api-key',
+				'refresh_token',
+				'clientSecret',
+				'password',
+			]),
+		);
+		tc.note(`key=${key} credential=${JSON.stringify(secret)}`);
+		expect(redactUpstreamResponse({ nested: [{ [key]: secret, ordinary: 'UNCHANGED' }] })).toEqual({
+			nested: [{ [key]: '[REDACTED]', ordinary: 'UNCHANGED' }],
+		});
+	}, settings);
+});
+
+it('redacts arbitrary parsed exact values through response and catalog recursion', () => {
+	hegel.test((tc) => {
+		const secret = tc.draw(
+			generators.text({ alphabet: 'abcxyz0129-_/.:雪é"\\\n', minSize: 1, maxSize: 80 }),
+		);
+		tc.note(`credential=${JSON.stringify(secret)}`);
+		const parsed: unknown = JSON.parse(
+			JSON.stringify({ nested: [{ value: secret }], ordinary: 'UNCHANGED' }),
+		);
+		const expected = { nested: [{ value: '[REDACTED]' }], ordinary: 'UNCHANGED' };
+		expect(toRedactedJsonValue(parsed, { exactValues: [secret] })).toEqual(expected);
+		expect(redactUpstreamCatalogValue(parsed, { exactValues: [secret] })).toEqual(expected);
+	}, settings);
+});
