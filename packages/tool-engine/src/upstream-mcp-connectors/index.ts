@@ -1,5 +1,9 @@
 export { createUpstreamMcpClientRuntime } from '#upstream-mcp-connectors/upstream-mcp-client-runtime';
 export {
+	createCredentialTextRedactor,
+	type CredentialTextRedactor,
+} from '#upstream-mcp-connectors/incremental-credential-redaction';
+export {
 	type UpstreamMcpFailurePhase,
 	type UpstreamMcpFailureClass,
 	type UpstreamMcpTransportSummary,

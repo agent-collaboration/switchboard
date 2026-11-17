@@ -161,7 +161,11 @@ it('redacts arbitrary parsed exact values through response and catalog recursion
 		const parsed: unknown = JSON.parse(
 			JSON.stringify({ nested: [{ value: secret }], ordinary: 'UNCHANGED' }),
 		);
-		const expected = { nested: [{ value: '[REDACTED]' }], ordinary: 'UNCHANGED' };
+		// The generated alphabet can match only isolated characters in these fixed keys.
+		const expected = {
+			nested: [{ ['value'.replaceAll(secret, '[REDACTED]')]: '[REDACTED]' }],
+			['ordinary'.replaceAll(secret, '[REDACTED]')]: 'UNCHANGED',
+		};
 		expect(toRedactedJsonValue(parsed, { exactValues: [secret] })).toEqual(expected);
 		expect(redactUpstreamCatalogValue(parsed, { exactValues: [secret] })).toEqual(expected);
 	}, settings);
