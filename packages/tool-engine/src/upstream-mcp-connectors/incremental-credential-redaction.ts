@@ -9,6 +9,7 @@ import type { RedactionOptions } from '#upstream-mcp-connectors/upstream-respons
 
 // Authorization prefixes permit unlimited whitespace. Beyond this retained-text cap,
 // mask the ambiguous prefix conservatively instead of retaining it or exposing it.
+// The cap must be at least the longest rule prefix (9 UTF-16 code units, password=).
 export const maximumPendingCredentialPatternCharacters = 4096;
 
 export interface CredentialTextRedactor {
