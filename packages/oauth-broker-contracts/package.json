@@ -38,6 +38,7 @@
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {
+		"@hegeldev/hegel": "0.4.10",
 		"vitest": "^4.1.5"
 	}
 }
