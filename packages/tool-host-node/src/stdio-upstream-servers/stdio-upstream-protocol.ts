@@ -1,6 +1,8 @@
 import {
+	redactCredentialText,
 	redactThrownError,
 	redactUpstreamCatalogValue,
+	type RedactionOptions,
 } from '@agent-collaboration/tool-engine/upstream-mcp-connectors';
 import { Client, SdkHttpError, type Transport } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
@@ -27,7 +29,10 @@ export function isMcpToolErrorResult(value: unknown): boolean {
 	return isObjectRecord(value) && value.isError === true;
 }
 
-export function providerErrorMessageFromMcpToolError(value: unknown): string | undefined {
+export function providerErrorMessageFromMcpToolError(
+	value: unknown,
+	redactionOptions?: RedactionOptions,
+): string | undefined {
 	if (!isObjectRecord(value) || !Array.isArray(value.content)) {
 		return undefined;
 	}
@@ -40,7 +45,11 @@ export function providerErrorMessageFromMcpToolError(value: unknown): string | u
 			) {
 				return [];
 			}
-			return [contentBlock.text.trim()];
+			const text =
+				redactionOptions === undefined
+					? contentBlock.text
+					: redactCredentialText(contentBlock.text, redactionOptions);
+			return [text.trim()];
 		})
 		.filter((text) => text.length > 0)
 		.join('\n');
