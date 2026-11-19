@@ -15,7 +15,7 @@ import {
 	authJourneyFiles,
 	authJourneyExecutionPattern,
 	journeyReadinessEvents,
-	admittedBackingFailureReceipts,
+	requireAdmittedRequestLimitCounters,
 	workerdOnlyCallerCases,
 	selectAuthObservations,
 	requireMatchingAuthObservations,
@@ -128,17 +128,7 @@ function requireAdmittedRequestLimits(props: {
 	readonly signInHost: 'workerd' | 'node';
 	readonly requestLimits: readonly AuthHarnessRequestLimits[];
 }): RequestLimitSummary {
-	// Every receipt counts on the host's real counter: Node's fixed window, or Miniflare's real binding.
-	const realCounter = props.signInHost === 'node' ? 'node-fixed-window' : 'cloudflare-real-binding';
-	const hostBackingFailure =
-		props.signInHost === 'node' ? 'node-counter-throws' : 'cloudflare-binding-rejects';
-	const armedFailures = props.requestLimits.filter((limits) => limits.backingFailure !== 'none');
-	if (
-		armedFailures.length !== admittedBackingFailureReceipts[props.journey] ||
-		armedFailures.some((limits) => limits.backingFailure !== hostBackingFailure) ||
-		props.requestLimits.some((limits) => limits.outerCounter !== realCounter)
-	)
-		throw new Error('Harness request counters differ from the admitted journey counters');
+	requireAdmittedRequestLimitCounters(props);
 	const outerCounters: Record<string, number> = {};
 	for (const limits of props.requestLimits)
 		outerCounters[limits.outerCounter] = (outerCounters[limits.outerCounter] ?? 0) + 1;

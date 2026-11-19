@@ -11,6 +11,8 @@ import {
 	ConfirmSecondFactorStep,
 	EnableTwoFactorStep,
 	PasskeyManager,
+	PasskeyButton,
+	passkeyPlugin,
 	twoFactorPlugin,
 } from '@agent-collaboration/auth-ui';
 import { Button } from '@agent-collaboration/tool-access-ui/ui/button';
@@ -32,6 +34,7 @@ import {
 	OrganizationPeople,
 	type OrganizationPeopleTransport,
 } from '#sign-in-core/pages/islands/organization-people';
+import { attachPasskeySignInTurnstile } from '#sign-in-core/pages/islands/passkey-sign-in-turnstile';
 import { PersonOrganizationChoice } from '#sign-in-core/pages/islands/person-organization-choice';
 import {
 	signInIslandAttribute,
@@ -39,7 +42,10 @@ import {
 	type SignInIslandState,
 } from '#sign-in-core/pages/islands/sign-in-island-state';
 
-const authClient = createAuthClient({ plugins: [twoFactorClient(), passkeyClient()] });
+const authClient = createAuthClient({
+	plugins: [twoFactorClient(), passkeyClient()],
+	fetchOptions: { onRequest: attachPasskeySignInTurnstile },
+});
 const queryClient = new QueryClient();
 
 /** Stable across island renders so another island mounting cannot restart a pending read. */
@@ -91,6 +97,8 @@ function NavigationLink(props: {
 
 function SignInPageContent({ state }: { readonly state: SignInIslandState }): React.ReactElement {
 	switch (state.kind) {
+		case 'passkey-sign-in':
+			return <PasskeyButton />;
 		case 'second-factor-enrollment':
 			return (
 				<EnableTwoFactorStep
@@ -173,14 +181,21 @@ function SignInPageContent({ state }: { readonly state: SignInIslandState }): Re
 	}
 }
 
-function IslandProviders({ children }: { readonly children: React.ReactNode }): React.ReactElement {
+function IslandProviders({
+	children,
+	continueLocation,
+}: {
+	readonly children: React.ReactNode;
+	readonly continueLocation: string;
+}): React.ReactElement {
 	return (
 		<AuthProvider
 			authClient={authClient}
 			queryClient={queryClient}
 			navigate={({ to }) => location.assign(to)}
 			Link={NavigationLink}
-			plugins={[twoFactorPlugin({ allowPasswordless: true })]}
+			plugins={[twoFactorPlugin({ allowPasswordless: true }), passkeyPlugin({ autoFill: false })]}
+			redirectTo={continueLocation}
 		>
 			{children}
 		</AuthProvider>
@@ -233,8 +248,15 @@ export function mountSignInIslands(page: Document): void {
 		pageTree = { container, reactRoot: createRoot(container), islands: [] };
 	}
 	pageTree.islands.push(...added);
+	const passkeyState = pageTree.islands.find(
+		(island) => island.state.kind === 'passkey-sign-in',
+	)?.state;
 	pageTree.reactRoot.render(
-		<IslandProviders>
+		<IslandProviders
+			continueLocation={
+				passkeyState?.kind === 'passkey-sign-in' ? passkeyState.continueLocation : '/owner-ready'
+			}
+		>
 			{pageTree.islands.map(({ root, state }, index) =>
 				createPortal(<SignInPageContent state={state} />, root, String(index)),
 			)}

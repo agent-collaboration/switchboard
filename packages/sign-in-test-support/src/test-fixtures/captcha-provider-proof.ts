@@ -7,16 +7,28 @@ import {
 	createProviderRequestState,
 	type SignInHttpConfiguration,
 } from '@agent-collaboration/sign-in-core/better-auth';
-import { signInWorkerConfiguration } from '@agent-collaboration/sign-in-host-cloudflare/configuration';
+import {
+	signInWorkerConfiguration,
+	workerClientAddressHeaders,
+} from '@agent-collaboration/sign-in-host-cloudflare/configuration';
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { captcha, type CloudflareTurnstileOptions } from 'better-auth/plugins/captcha';
 import { z } from 'zod';
 
-const providerControlSchema = z.strictObject({
-	endpoint: z.enum(['social', 'passkey']),
+const captchaControlFields = {
 	mode: z.enum(['provider', 'native-hook', 'observed-hook', 'configuration']).default('provider'),
 	provider: z.enum(['google', 'unconfigured']).default('google'),
-});
+};
+const providerControlSchema = z.discriminatedUnion('endpoint', [
+	z.strictObject({ endpoint: z.literal('social'), ...captchaControlFields }),
+	z.strictObject({ endpoint: z.literal('passkey'), ...captchaControlFields }),
+	z.strictObject({
+		endpoint: z.literal('passkey-verification'),
+		mode: z.literal('provider').default('provider'),
+		assertion: z.record(z.string(), z.unknown()),
+	}),
+]);
+const captchaProviderProofPath = '/__auth-proof/captcha-provider';
 
 const nativeCaptchaOptionsSchema = z.object({
 	provider: z.literal('cloudflare-turnstile'),
@@ -44,20 +56,23 @@ async function describeCaptchaResponse(
 		: { kind: 'response', status: response.status, body: await response.text() };
 }
 
-/** Provider-level only. Public passkey routes remain refused by production.
- * Requests still traverse Better Auth's actual handler and captcha hooks. */
+/** Provider-level only. Ordinary requests keep their original body for the production handler. */
 export async function handleCaptchaProviderProof(
 	request: Request,
 	bindings: AuthWorkerEnv,
 ): Promise<Response | null> {
-	return handleConfiguredCaptchaProviderProof(request, () => signInWorkerConfiguration(bindings));
+	if (new URL(request.url).pathname !== captchaProviderProofPath) return null;
+	return handleConfiguredCaptchaProviderProof(
+		new Request(request, { headers: workerClientAddressHeaders(request.headers) }),
+		() => signInWorkerConfiguration(bindings),
+	);
 }
 
 export async function handleConfiguredCaptchaProviderProof(
 	request: Request,
 	hostConfiguration: () => SignInHttpConfiguration,
 ): Promise<Response | null> {
-	if (new URL(request.url).pathname !== '/__auth-proof/captcha-provider') return null;
+	if (new URL(request.url).pathname !== captchaProviderProofPath) return null;
 	const control = providerControlSchema.parse(await request.json());
 	const host = hostConfiguration();
 	const configuration =
@@ -106,7 +121,11 @@ export async function handleConfiguredCaptchaProviderProof(
 		});
 	}
 	const endpoint =
-		control.endpoint === 'social' ? '/sign-in/social' : '/passkey/generate-authenticate-options';
+		control.endpoint === 'social'
+			? '/sign-in/social'
+			: control.endpoint === 'passkey'
+				? '/passkey/generate-authenticate-options'
+				: '/passkey/verify-authentication';
 	const headers = new Headers(request.headers);
 	headers.delete('content-length');
 	const providerRequest =
@@ -119,12 +138,29 @@ export async function handleConfiguredCaptchaProviderProof(
 						callbackURL: new URL('/owner-ready', host.configuration.issuer).toString(),
 					}),
 				})
-			: new Request(new URL('/api/auth' + endpoint, host.configuration.issuer), {
-					method: 'GET',
-					headers,
-				});
+			: control.endpoint === 'passkey'
+				? new Request(new URL('/api/auth' + endpoint, host.configuration.issuer), {
+						method: 'GET',
+						headers,
+					})
+				: new Request(new URL('/api/auth' + endpoint, host.configuration.issuer), {
+						method: 'POST',
+						headers,
+						body: JSON.stringify(control.assertion),
+					});
 	if (control.mode === 'provider') {
 		const response = await auth.handler(providerRequest);
+		// This route deliberately bypasses the outer handler: an actual native 429
+		// can therefore only come from the provider, never the outer class counter.
+		if (response.status === 429) {
+			const observation = {
+				kind: 'request-limited',
+				requestClass: control.endpoint === 'social' ? 'sign-in' : 'callback-passkey',
+				layer: 'provider',
+			} as const satisfies SignInObservation;
+			observations.push(observation);
+			host.platform.log(observation);
+		}
 		return Response.json({
 			response: await describeCaptchaResponse(response),
 			observations,

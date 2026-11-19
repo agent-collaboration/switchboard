@@ -89,7 +89,7 @@ for (const backupState of ['device-bound', 'synced'] as const) {
 	});
 }
 
-it('people: valid passkey signatures without UV cannot register or confirm, and passkey sign-in remains unoffered', async () => {
+it('people: valid passkey signatures without UV cannot register, confirm or sign in', async () => {
 	const harness = await startLocalAuthHarness();
 	try {
 		const personId = await signInConfirmedPeopleBrowser({ harness, email });
@@ -130,12 +130,34 @@ it('people: valid passkey signatures without UV cannot register or confirm, and 
 		expect(
 			await readCurrentBrowserSession({ cookie: harness.cookie(), database: harness.database }),
 		).toEqual(before);
-		expect((await harness.auth('/api/auth/passkey/generate-authenticate-options')).status).toBe(
-			404,
-		);
-		expect((await passkeyPost(harness, 'verify-authentication', { response: {} })).status).toBe(
-			404,
-		);
+		harness.clearBrowserSession();
+		const optionsResponse = await harness.auth('/api/auth/passkey/generate-authenticate-options', {
+			headers: {
+				'x-captcha-response': harness.turnstile.issueToken({
+					action: 'passkey_sign_in',
+					hostname: new URL(harness.issuer).hostname,
+					verdict: 'accepted',
+				}),
+			},
+		});
+		expect(optionsResponse.status).toBe(200);
+		const options = z
+			.object({ challenge: z.string(), rpId: z.string() })
+			.parse(await optionsResponse.json());
+		const sessions = await harness.database.select().from(session);
+		expect(
+			(
+				await passkeyPost(harness, 'verify-authentication', {
+					response: authenticator.authenticationResponse({
+						challenge: options.challenge,
+						rpId: options.rpId,
+						origin: harness.issuer,
+						userVerified: false,
+					}),
+				})
+			).status,
+		).toBe(401);
+		expect(await harness.database.select().from(session)).toEqual(sessions);
 	} finally {
 		await harness.close();
 	}

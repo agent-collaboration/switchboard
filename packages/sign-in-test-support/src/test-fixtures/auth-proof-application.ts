@@ -1,3 +1,4 @@
+import { epochMillisecondsSchema } from '@agent-collaboration/sign-in-core';
 import { createSignInHttpHandler } from '@agent-collaboration/sign-in-core/better-auth';
 import productionSignInWorker from '@agent-collaboration/sign-in-host-cloudflare';
 import {
@@ -68,7 +69,9 @@ export async function handleAuthProofRequest(
 		},
 	);
 	if (authorizationDrain !== null) return authorizationDrain;
-	const limiterControl = handleAuthProofLimiterControl(request);
+	const limiterControl = handleAuthProofLimiterControl(request, incomingBindings, {
+		now: () => epochMillisecondsSchema.parse(readControlledWorkerTime()),
+	});
 	if (limiterControl !== null) return limiterControl;
 	const drain = handleCaptchaObservationDrain(request);
 	if (drain !== null) return drain;

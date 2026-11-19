@@ -20,3 +20,4 @@ export {
 } from '@auth-ui/components/auth/passkey/passkey-manager';
 export { passkeyPlugin } from '@better-auth-ui/core/plugins/passkey';
 export { BackupCodes } from '@auth-ui/components/auth/two-factor/backup-codes';
+export { PasskeyButton } from '@auth-ui/components/auth/passkey/passkey-button';

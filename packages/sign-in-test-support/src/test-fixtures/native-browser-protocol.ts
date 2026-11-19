@@ -299,6 +299,7 @@ export async function startHeadlessChrome(evidence: string): Promise<{
 			'--no-default-browser-check',
 			'--disable-background-networking',
 			'--disable-sync',
+			'--host-resolver-rules=MAP localhost 127.0.0.1',
 			'about:blank',
 		],
 		{ stdio: ['ignore', 'ignore', 'pipe'] },

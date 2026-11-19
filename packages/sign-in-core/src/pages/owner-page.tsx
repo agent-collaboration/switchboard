@@ -33,6 +33,7 @@ import type { OrganizationId } from '#sign-in-core/storage/models/sign-in-store'
 
 export interface OwnerPageProps {
 	readonly ready: boolean;
+	readonly continueLocation?: string;
 	readonly configuration: SignInConfiguration;
 	readonly resume: string | null;
 	readonly createOrganization?: boolean;
@@ -113,7 +114,9 @@ export function ownerPageTitle(props: OwnerPageProps): string {
 
 function SignInCard({
 	configuration,
+	continueLocation,
 }: {
+	readonly continueLocation: string;
 	readonly configuration: SignInConfiguration;
 }): React.ReactElement {
 	return (
@@ -138,6 +141,14 @@ function SignInCard({
 						<GitHubIcon aria-hidden="true" data-icon="inline-start" />
 						Continue with GitHub
 					</Button>
+					<div className="w-full">
+						<IslandRoot state={{ kind: 'passkey-sign-in', continueLocation }} fallback={null} />
+					</div>
+					<div
+						id="sign-in-passkey-captcha"
+						data-sitekey={configuration.turnstile.siteKey}
+						data-action="passkey_sign_in"
+					/>
 				</CardFooter>
 			</form>
 		</Card>
@@ -291,7 +302,10 @@ export function OwnerPage(props: OwnerPageProps): React.ReactElement {
 	if (!props.ready)
 		return (
 			<>
-				<SignInCard configuration={props.configuration} />
+				<SignInCard
+					configuration={props.configuration}
+					continueLocation={props.continueLocation ?? '/owner-ready'}
+				/>
 				<PageStatus />
 			</>
 		);
