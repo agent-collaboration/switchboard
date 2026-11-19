@@ -20,6 +20,7 @@ import {
 	startHeadlessChrome,
 	type ChromeProtocol,
 } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import { observeNativePasskeyBrowser } from '#sign-in-test-support/test-fixtures/native-passkey-browser-scenario';
 import { prepareNodeProofArtifacts } from '#sign-in-test-support/test-fixtures/node-proof-artifacts';
 import { prepareProofBundles } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 
@@ -30,7 +31,7 @@ const execute = promisify(execFile);
 const digest = (bytes: string | Uint8Array): string =>
 	createHash('sha256').update(bytes).digest('hex');
 
-interface Step {
+export interface NativeBrowserStep {
 	readonly name: string;
 	readonly status: 'passed' | 'failed';
 	readonly facts: Readonly<Record<string, unknown>>;
@@ -38,7 +39,7 @@ interface Step {
 }
 
 /** The standard host lane owns the checkout and build; every run gets private evidence and state. */
-export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): Promise<void> {
+async function observeNativeFactorBrowser(host: 'node' | 'cloudflare'): Promise<void> {
 	const root = fileURLToPath(new URL('../../../../', import.meta.url));
 	const sourceRevision = (await execute('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
 	// A label only, from the controlled clock (R33); mkdtemp's suffix keeps each run private.
@@ -62,7 +63,7 @@ export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): P
 	process.stdout.write(
 		JSON.stringify({ event: 'native-browser-evidence', host, sourceRevision, evidence }) + '\n',
 	);
-	const steps: Step[] = [];
+	const steps: NativeBrowserStep[] = [];
 	let activeStep = 'prepare';
 	let harness: Awaited<ReturnType<typeof startLocalAuthHarness>> | undefined;
 	let chrome: Awaited<ReturnType<typeof startHeadlessChrome>> | undefined;
@@ -405,7 +406,7 @@ export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): P
 		)
 			throw new Error('Native browser checkout changed during the journey');
 	} catch (error) {
-		let failureScreenshot: Step['screenshot'];
+		let failureScreenshot: NativeBrowserStep['screenshot'];
 		try {
 			if (browserPage !== undefined)
 				failureScreenshot = await browserPage.screenshot('failure-state');
@@ -481,4 +482,10 @@ export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): P
 		);
 	}
 	if (cleanupFailure !== null) throw new Error(cleanupFailure);
+}
+
+export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): Promise<void> {
+	await observeNativeFactorBrowser(host);
+	for (const kind of ['journey', 'no-user-verification', 'cli-login', 'script-failure'] as const)
+		await observeNativePasskeyBrowser(host, kind);
 }

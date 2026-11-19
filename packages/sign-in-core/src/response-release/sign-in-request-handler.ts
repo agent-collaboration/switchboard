@@ -29,6 +29,7 @@ export function isPublicSignInRoute(pathname: string, method: string): boolean {
 			(method === 'GET' &&
 				[
 					'/api/auth/passkey/generate-register-options',
+					'/api/auth/passkey/generate-authenticate-options',
 					'/api/auth/passkey/list-user-passkeys',
 				].includes(pathname)) ||
 			(method === 'POST' &&
@@ -39,6 +40,7 @@ export function isPublicSignInRoute(pathname: string, method: string): boolean {
 					'/api/auth/two-factor/generate-backup-codes',
 					'/api/auth/two-factor/remove-app',
 					'/api/auth/passkey/verify-registration',
+					'/api/auth/passkey/verify-authentication',
 					'/api/auth/passkey/update-passkey',
 					'/api/auth/passkey/remove',
 					'/api/auth/passkey/confirm-options',

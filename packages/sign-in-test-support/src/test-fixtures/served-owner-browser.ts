@@ -183,6 +183,8 @@ export function createServedOwnerBrowser(props: {
 					close: (): void => undefined,
 				},
 				window: {
+					addEventListener: dom.window.addEventListener.bind(dom.window),
+					dispatchEvent: dom.window.dispatchEvent.bind(dom.window),
 					turnstile: {
 						render(
 							_element: unknown,
@@ -206,6 +208,7 @@ export function createServedOwnerBrowser(props: {
 					return pending;
 				},
 				FormData: dom.window.FormData,
+				Event: dom.window.Event,
 				location: {
 					assign: (url: string): void => completion.resolve({ kind: 'navigate', url }),
 					reload: (): void => completion.resolve({ kind: 'navigate', url: address }),

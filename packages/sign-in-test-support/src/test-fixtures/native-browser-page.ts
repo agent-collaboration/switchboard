@@ -78,12 +78,33 @@ export class NativeBrowserPage {
 		await pending;
 	}
 	async click(selector: string, label?: string): Promise<void> {
-		const point = await this.evaluate(
-			`(()=>{const element=[...document.querySelectorAll(${JSON.stringify(selector)})].find(node=>${label === undefined ? 'true' : `node.textContent.trim()===${JSON.stringify(label)}`});if(!element||element.disabled)throw new Error('Enabled control missing');element.scrollIntoView({block:'center'});const rect=element.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};})()`,
-			// The DevTools coordinate fields are named x/y.
-			// oxlint-disable-next-line id-length
-			z.object({ x: z.number(), y: z.number() }),
+		await this.evaluate(
+			'document.fonts.ready.then(()=>new Promise(resolve=>requestAnimationFrame(()=>resolve(true))))',
+			z.literal(true),
 		);
+		const measured = await this.evaluate(
+			`(()=>{const element=[...document.querySelectorAll(${JSON.stringify(selector)})].find(node=>${label === undefined ? 'true' : `node.textContent.trim()===${JSON.stringify(label)}`});if(!element||element.disabled)throw new Error('Enabled control missing');element.scrollIntoView({block:'center'});const rect=element.getBoundingClientRect();const x=rect.x+rect.width/2;const y=rect.y+rect.height/2;const hit=document.elementFromPoint(x,y);if(hit?.closest(${JSON.stringify(selector)})!==element)return {kind:'miss',target:hit===null?{tag:'none',id:'',classes:[]}:{tag:hit.tagName.toLowerCase(),id:hit.id,classes:[...hit.classList]}};return {kind:'hit',point:{x,y}};})()`,
+			z.discriminatedUnion('kind', [
+				z.object({
+					kind: z.literal('hit'),
+					// DevTools requires these coordinate field names.
+					// oxlint-disable-next-line id-length
+					point: z.object({ x: z.number(), y: z.number() }),
+				}),
+				z.object({
+					kind: z.literal('miss'),
+					target: z.object({ tag: z.string(), id: z.string(), classes: z.array(z.string()) }),
+				}),
+			]),
+		);
+		if (measured.kind === 'miss')
+			throw new Error(
+				'Native click hit ' +
+					JSON.stringify(measured.target) +
+					' instead of the expected control ' +
+					selector,
+			);
+		const point = measured.point;
 		await this.protocol.call(
 			'Input.dispatchMouseEvent',
 			{ type: 'mousePressed', ...point, button: 'left', clickCount: 1 },
@@ -92,6 +113,39 @@ export class NativeBrowserPage {
 		await this.protocol.call(
 			'Input.dispatchMouseEvent',
 			{ type: 'mouseReleased', ...point, button: 'left', clickCount: 1 },
+			empty,
+		);
+	}
+	/** Keyboard activation follows the focused button even when a sibling changes the layout. */
+	async activateButton(selector: string, label: string): Promise<void> {
+		await this.evaluate(
+			`(()=>{const button=[...document.querySelectorAll(${JSON.stringify(selector)})].find(node=>node.textContent.trim()===${JSON.stringify(label)});if(!(button instanceof HTMLButtonElement)||!button.isConnected||button.disabled)throw new Error('Enabled keyboard control missing');button.focus({preventScroll:true});const rect=button.getBoundingClientRect();return button===document.activeElement&&rect.width>0&&rect.height>0;})()`,
+			z.literal(true),
+		);
+		await this.evaluate(
+			`(()=>{const button=document.activeElement;return button instanceof HTMLButtonElement&&button.isConnected&&!button.disabled&&button.matches(${JSON.stringify(selector)})&&button.textContent.trim()===${JSON.stringify(label)};})()`,
+			z.literal(true),
+		);
+		await this.protocol.call(
+			'Input.dispatchKeyEvent',
+			{
+				type: 'rawKeyDown',
+				key: ' ',
+				code: 'Space',
+				windowsVirtualKeyCode: 32,
+				nativeVirtualKeyCode: 32,
+			},
+			empty,
+		);
+		await this.protocol.call(
+			'Input.dispatchKeyEvent',
+			{
+				type: 'keyUp',
+				key: ' ',
+				code: 'Space',
+				windowsVirtualKeyCode: 32,
+				nativeVirtualKeyCode: 32,
+			},
 			empty,
 		);
 	}

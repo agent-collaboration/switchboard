@@ -68,6 +68,7 @@ import { recordNodeProofInvocationFailure } from '#sign-in-test-support/test-fix
 import { decorateNodeProofStore } from '#sign-in-test-support/test-fixtures/node-proof-store';
 import { withNodeProviderNetwork } from '#sign-in-test-support/test-fixtures/node-provider-network';
 import { handleOrganizationKeyChangeProofRequest } from '#sign-in-test-support/test-fixtures/organization-key-change-proof';
+import { createPasskeyReleaseFailure } from '#sign-in-test-support/test-fixtures/passkey-release-failure';
 import {
 	readPersonConfirmationProbe,
 	personSessionReadKind,
@@ -116,6 +117,13 @@ export async function startNodeAuthProofHost(props: {
 	readonly clientAddress?: NodeSignInSettings['clientAddress'];
 	readonly capabilityRecording?: NodeCapabilityRecordingOption;
 }): Promise<NodeAuthProofHost> {
+	const passkeyReleaseFailure = createPasskeyReleaseFailure();
+	let failNextPasskeyUserRead = false;
+	let lastSessionInsert: {
+		readonly query: string;
+		readonly parameters: readonly unknown[];
+	} | null = null;
+	const passkeyReads = new AsyncLocalStorage<{ failAfterInsert: boolean }>();
 	let fault: DatabaseFault | null = null;
 	let observed: { readonly clientId: string; readonly keys: readonly string[] } | null = null;
 	const disabledWrites: { readonly client_id: string }[] = [];
@@ -138,6 +146,18 @@ export async function startNodeAuthProofHost(props: {
 		logger: {
 			logQuery(query: string, parameters: unknown[]): void {
 				const call = { query, parameters };
+				passkeyReleaseFailure.beforeDriverCall(call);
+				const passkeyRead = passkeyReads.getStore();
+				if (/^\s*insert into "session"/iu.test(query)) {
+					lastSessionInsert = call;
+					if (passkeyRead !== undefined && failNextPasskeyUserRead) {
+						failNextPasskeyUserRead = false;
+						passkeyRead.failAfterInsert = true;
+					}
+				} else if (passkeyRead?.failAfterInsert && /^\s*select\b.*\bfrom "user"/iu.test(query)) {
+					passkeyRead.failAfterInsert = false;
+					throw new Error('Injected passkey user read failure');
+				}
 				const confirmation = confirmationReads.getStore();
 				if (
 					confirmation?.phase.kind === 'pending' &&
@@ -409,6 +429,8 @@ export async function startNodeAuthProofHost(props: {
 			return Response.json({ kind: 'settled' });
 		}
 		const pathname = new URL(request.url).pathname;
+		const releaseFailureControl = passkeyReleaseFailure.control(request);
+		if (releaseFailureControl !== null) return releaseFailureControl;
 		if (pathname === captchaObservationDrainPath) return Response.json({ kind: 'complete' });
 		const captchaProof = await handleConfiguredCaptchaProviderProof(request, () => configuration);
 		if (captchaProof !== null) return captchaProof;
@@ -441,6 +463,12 @@ export async function startNodeAuthProofHost(props: {
 			setControlledTime(input.milliseconds);
 			return Response.json({ controlledMilliseconds: milliseconds });
 		}
+		if (pathname === '/__auth-proof/fail-next-passkey-user-read' && request.method === 'POST') {
+			failNextPasskeyUserRead = true;
+			return Response.json({ kind: 'armed' });
+		}
+		if (pathname === '/__auth-proof/last-session-insert' && request.method === 'GET')
+			return Response.json(lastSessionInsert);
 		if (pathname === '/__auth-proof/limiter-unavailable' && request.method === 'POST') {
 			backingUnavailable = true;
 			return Response.json({ kind: 'armed' });
@@ -526,7 +554,7 @@ export async function startNodeAuthProofHost(props: {
 					const requestBody = await request.clone().text();
 					let response: Response;
 					try {
-						response = await handle(request);
+						response = await passkeyReads.run({ failAfterInsert: false }, () => handle(request));
 					} catch (error) {
 						recordNodeProofInvocationFailure(error, {
 							...nodeHttpRequestIdentitySchema.parse({

@@ -22,11 +22,17 @@ import type { FactorPageState } from '#sign-in-core/better-auth/factor-enrollmen
 import type { SignInConfiguration } from '#sign-in-core/contracts/deployment-configuration';
 import type { OrganizationFleetState } from '#sign-in-core/organizations/organization-provisioning';
 import { FactorControls } from '#sign-in-core/pages/factor-page';
-import { PageStatus, SetupSteps, type SetupStep } from '#sign-in-core/pages/page-document';
+import {
+	IslandRoot,
+	PageStatus,
+	SetupSteps,
+	type SetupStep,
+} from '#sign-in-core/pages/page-document';
 import type { OrganizationMembership } from '#sign-in-core/storage/organization-membership-store';
 
 export interface OwnerPageProps {
 	readonly ready: boolean;
+	readonly continueLocation?: string;
 	readonly configuration: SignInConfiguration;
 	readonly resume: string | null;
 	readonly createOrganization?: boolean;
@@ -108,7 +114,9 @@ export function ownerPageTitle(props: OwnerPageProps): string {
 
 function SignInCard({
 	configuration,
+	continueLocation,
 }: {
+	readonly continueLocation: string;
 	readonly configuration: SignInConfiguration;
 }): React.ReactElement {
 	return (
@@ -133,6 +141,14 @@ function SignInCard({
 						<GitHubIcon aria-hidden="true" data-icon="inline-start" />
 						Continue with GitHub
 					</Button>
+					<div className="w-full">
+						<IslandRoot state={{ kind: 'passkey-sign-in', continueLocation }} fallback={null} />
+					</div>
+					<div
+						id="sign-in-passkey-captcha"
+						data-sitekey={configuration.turnstile.siteKey}
+						data-action="passkey_sign_in"
+					/>
 				</CardFooter>
 			</form>
 		</Card>
@@ -317,7 +333,10 @@ export function OwnerPage(props: OwnerPageProps): React.ReactElement {
 	if (!props.ready)
 		return (
 			<>
-				<SignInCard configuration={props.configuration} />
+				<SignInCard
+					configuration={props.configuration}
+					continueLocation={props.continueLocation ?? '/owner-ready'}
+				/>
 				<PageStatus />
 			</>
 		);

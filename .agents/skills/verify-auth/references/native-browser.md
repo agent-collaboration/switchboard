@@ -30,6 +30,8 @@ The permanent assertions require these outcomes on each host:
 - After the existing clock seam advances beyond the confirmation window, the organization form is hidden. A code excluded from the valid time window is refused with Better Auth’s “Invalid code” inline and exactly one toast; a valid code confirms and reaches the organization form.
 - The real organization form succeeds and shows account/Security. Replacement returns new recovery codes with none reused and mounts Copy, Download, Print and Finish in the written page. Finish returns to account.
 - Native get-session returns a session id and no recursively present token key.
+- Passkey journey 5 runs on a localhost issuer with Chrome's virtual CTAP2 authenticator: Add passkey, clear Chrome cookies as signed-out setup, click Continue with Passkey, return to account, then POST an invitation from that page's browser context and read it back from storage. This is API-via-browser proof; there is no invitation UI in this change.
+- Turning virtual user verification off refuses sign-in with no session. The real owner CLI login preserves its authorize continuation and completes to its private cache. Loading the click-only sign-in page sends no challenge request. A failed Turnstile script displays the unavailable notice, enables the button again, and sends no challenge. The passkey button aligns with the social buttons at 400 px.
 
 The software authenticator and native hosts share `controlled-sign-in-time.ts`; only Date is faked, leaving protocol bounds real. Page navigation is armed before navigating actions, and the DOM predicate is evaluated in the new document. Never replay the product action or weaken a predicate to clear a driver failure.
 
