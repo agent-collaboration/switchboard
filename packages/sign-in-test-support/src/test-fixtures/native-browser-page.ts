@@ -22,11 +22,12 @@ export interface NativeBrowserScreenshot {
 	readonly sha256: string;
 }
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+type NativePageProtocol = Pick<ChromeProtocol, 'call' | 'waitFor' | 'forgetEvents'>;
 
 /** DOM/event actions and private frame retention, independent of the native auth scenario. */
 export class NativeBrowserPage {
 	constructor(
-		private readonly protocol: ChromeProtocol,
+		private readonly protocol: NativePageProtocol,
 		private readonly evidence: string,
 	) {}
 	async evaluate<TValue>(expression: string, schema: z.ZodType<TValue>): Promise<TValue> {
@@ -185,7 +186,18 @@ export class NativeBrowserPage {
 			},
 			z.object({ data: z.string() }),
 		);
-		const data = Buffer.from(shot.data, 'base64');
+		return this.recordScreenshot(name, Buffer.from(shot.data, 'base64'));
+	}
+	/** Failure evidence uses only CDP capture; renderer frames and layout are not prerequisites. */
+	async captureFailureFrame(): Promise<Uint8Array> {
+		const shot = await this.protocol.call(
+			'Page.captureScreenshot',
+			{ format: 'png' },
+			z.object({ data: z.string() }),
+		);
+		return Buffer.from(shot.data, 'base64');
+	}
+	async recordScreenshot(name: string, data: Uint8Array): Promise<NativeBrowserScreenshot> {
 		const file = name + '.png';
 		await writeFile(path.join(this.evidence, file), data, { mode: 0o600, flag: 'wx' });
 		return { file, bytes: data.length, sha256: digest(data) };

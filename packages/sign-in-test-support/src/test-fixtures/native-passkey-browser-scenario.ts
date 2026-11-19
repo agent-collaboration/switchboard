@@ -12,6 +12,10 @@ import { z } from 'zod';
 import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import { startLocalAuthHarness } from '#sign-in-test-support/test-fixtures/local-auth-harness';
 import {
+	finishNativeBrowserScenario,
+	type NativeBrowserFailure,
+} from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import {
 	NativeBrowserPage,
 	nativeNetworkResponseSchema,
 } from '#sign-in-test-support/test-fixtures/native-browser-page';
@@ -50,6 +54,7 @@ export async function observeNativePasskeyBrowser(
 	let chrome: Awaited<ReturnType<typeof startHeadlessChrome>> | undefined;
 	let browser: NativeBrowserPage | undefined;
 	let cleanupFailure: string | null = null;
+	let scenarioFailure: NativeBrowserFailure = { kind: 'none' };
 	async function phase(name: string): Promise<void> {
 		activeStep = name;
 		await writeFile(
@@ -650,74 +655,124 @@ export async function observeNativePasskeyBrowser(
 		)
 			throw new Error('Passkey source changed during run');
 	} catch (error) {
-		let screenshot: NativeBrowserStep['screenshot'];
-		try {
-			if (browser !== undefined) screenshot = await browser.screenshot('failure-state');
-		} catch {
-			/* Preserve deciding failure. */
-		}
-		steps.push({
-			name: activeStep,
-			status: 'failed',
-			facts: { message: error instanceof Error ? error.message : 'Unknown passkey failure' },
-			...(screenshot === undefined ? {} : { screenshot }),
-		});
-		throw error;
+		scenarioFailure = { kind: 'failed', error };
 	} finally {
-		try {
-			await chrome?.close();
-		} catch (error) {
-			cleanupFailure = error instanceof Error ? error.message : 'Chrome cleanup failed';
-		}
-		try {
-			await harness?.close();
-		} catch (error) {
-			cleanupFailure = error instanceof Error ? error.message : 'Harness cleanup failed';
-		}
-		for (const [name, value] of Object.entries({
-			SIGN_IN_TEST_HOST: previous.host,
-			AUTH_PROOF_MANIFEST_FILE: previous.manifest,
-			AUTH_PROOF_NODE_MANIFEST_FILE: previous.node,
-		})) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
-		await writeFile(path.join(evidence, 'steps.json'), JSON.stringify(steps, null, 2), {
-			mode: 0o600,
+		const failureStep: NativeBrowserStep | undefined =
+			scenarioFailure.kind === 'failed'
+				? {
+						name: activeStep,
+						status: 'failed',
+						facts: {
+							message:
+								scenarioFailure.error instanceof Error
+									? scenarioFailure.error.message
+									: 'Unknown passkey failure',
+						},
+					}
+				: undefined;
+		const failureBrowser = browser;
+		await finishNativeBrowserScenario({
+			failure: scenarioFailure,
+			recordFailure: async (): Promise<void> => {
+				if (failureStep === undefined) return;
+				steps.push(failureStep);
+				await writeFile(path.join(evidence, 'steps.json'), JSON.stringify(steps, null, 2), {
+					mode: 0o600,
+				});
+			},
+			...(failureBrowser === undefined
+				? {}
+				: { captureFailure: () => failureBrowser.captureFailureFrame() }),
+			close: async (): Promise<void> => {
+				const closeFailures: unknown[] = [];
+				try {
+					await chrome?.close();
+				} catch (error) {
+					cleanupFailure = error instanceof Error ? error.message : 'Chrome cleanup failed';
+					closeFailures.push(error);
+				}
+				try {
+					await harness?.close();
+				} catch (error) {
+					cleanupFailure = error instanceof Error ? error.message : 'Harness cleanup failed';
+					closeFailures.push(error);
+				}
+				for (const [name, value] of Object.entries({
+					SIGN_IN_TEST_HOST: previous.host,
+					AUTH_PROOF_MANIFEST_FILE: previous.manifest,
+					AUTH_PROOF_NODE_MANIFEST_FILE: previous.node,
+				})) {
+					if (value === undefined) delete process.env[name];
+					else process.env[name] = value;
+				}
+				if (closeFailures.length === 1) throw closeFailures[0];
+				if (closeFailures.length > 1)
+					throw new AggregateError(closeFailures, 'Native browser cleanup failed', {
+						cause: closeFailures[0],
+					});
+			},
+			record: async (capture): Promise<void> => {
+				let failureScreenshot: NativeBrowserStep['screenshot'];
+				if (capture !== undefined && failureBrowser !== undefined) {
+					try {
+						failureScreenshot = await failureBrowser.recordScreenshot('failure-state', capture);
+					} catch {
+						// Optional frame storage cannot replace the already-persisted deciding error.
+					}
+				}
+				const capturedFailure =
+					failureStep !== undefined && failureScreenshot !== undefined
+						? { ...failureStep, screenshot: failureScreenshot }
+						: undefined;
+				const completedSteps = steps.map((step) =>
+					step === failureStep && capturedFailure !== undefined ? capturedFailure : step,
+				);
+				await writeFile(
+					path.join(evidence, 'steps.json'),
+					JSON.stringify(completedSteps, null, 2),
+					{
+						mode: 0o600,
+					},
+				);
+				await writeFile(
+					path.join(evidence, 'observation.json'),
+					JSON.stringify(
+						{
+							target: {
+								sourceRevision,
+								root,
+								executionHost: hostname(),
+								nodeVersion: process.version,
+							},
+							host,
+							kind,
+							layer: 'real Chrome/native Better Auth/selected storage',
+							steps: completedSteps,
+							statuses,
+							cleanupFailure,
+							chromePid: chrome?.pid ?? null,
+							standIns: [
+								'controlled provider',
+								'Turnstile script and siteverify',
+								'software TOTP authenticator',
+								'Chrome virtual WebAuthn authenticator',
+								'injected clock',
+								'central recording peer',
+							],
+							notCovered: [
+								'physical authenticators',
+								'real Turnstile',
+								'staging',
+								'real provider identity',
+								'invite UI',
+							],
+						},
+						null,
+						2,
+					),
+					{ mode: 0o600 },
+				);
+			},
 		});
-		await writeFile(
-			path.join(evidence, 'observation.json'),
-			JSON.stringify(
-				{
-					target: { sourceRevision, root, executionHost: hostname(), nodeVersion: process.version },
-					host,
-					kind,
-					layer: 'real Chrome/native Better Auth/selected storage',
-					steps,
-					statuses,
-					cleanupFailure,
-					chromePid: chrome?.pid ?? null,
-					standIns: [
-						'controlled provider',
-						'Turnstile script and siteverify',
-						'software TOTP authenticator',
-						'Chrome virtual WebAuthn authenticator',
-						'injected clock',
-						'central recording peer',
-					],
-					notCovered: [
-						'physical authenticators',
-						'real Turnstile',
-						'staging',
-						'real provider identity',
-						'invite UI',
-					],
-				},
-				null,
-				2,
-			),
-			{ mode: 0o600 },
-		);
 	}
-	if (cleanupFailure !== null) throw new Error(cleanupFailure);
 }
