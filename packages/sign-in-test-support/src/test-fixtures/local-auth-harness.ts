@@ -98,6 +98,7 @@ import {
 } from '#sign-in-test-support/test-fixtures/node-management-bridge-contracts';
 import { loadNodeProofArtifacts } from '#sign-in-test-support/test-fixtures/node-proof-artifacts';
 import { retainOrganizationJourneyEvidence } from '#sign-in-test-support/test-fixtures/organization-journey-evidence';
+import { passkeyReleaseFailureStateSchema } from '#sign-in-test-support/test-fixtures/passkey-release-failure';
 import { createProofBrowserAddresses } from '#sign-in-test-support/test-fixtures/proof-browser-addresses';
 import {
 	loadProofBundles,
@@ -179,7 +180,12 @@ export async function startLocalAuthHarness(
 		readonly capabilityRecords: () => readonly SignInCapabilityRecord[];
 		readonly makeLimiterUnavailable: () => Promise<void>;
 		readonly useControlledServicePageWindow: () => Promise<void>;
+		readonly useControlledPasskeyWindow: () => Promise<void>;
 		readonly failNextPasskeyUserRead: () => Promise<void>;
+		readonly failNextPasskeyReleaseCleanup: () => Promise<void>;
+		readonly passkeyReleaseFailureState: () => Promise<
+			z.infer<typeof passkeyReleaseFailureStateSchema>
+		>;
 		readonly lastSessionInsert: () => Promise<{
 			readonly query: string;
 			readonly parameters: readonly unknown[];
@@ -700,9 +706,11 @@ export async function startLocalAuthHarness(
 		throw error;
 	});
 	let readiness: AuthHarnessReadiness = { ready: false, readinessEvent: 'none' };
-	let backingFailure: AuthHarnessRequestLimits['backingFailure'] = 'none';
-	let outerCounter: AuthHarnessRequestLimits['outerCounter'] =
-		signInHost === 'node' ? 'node-fixed-window' : 'cloudflare-real-binding';
+	let requestLimitIdentity: AuthHarnessRequestLimits = {
+		outerCounter: signInHost === 'node' ? 'node-fixed-window' : 'cloudflare-real-binding',
+		backingFailure: 'none',
+		observations: [],
+	};
 	let limitObservations: AuthHarnessRequestLimits['observations'] = [];
 	const browser = createLocalAuthBrowser({
 		issuer,
@@ -766,15 +774,10 @@ export async function startLocalAuthHarness(
 	async function recordTarget(next: AuthHarnessReadiness): Promise<void> {
 		const rank = { none: 0, signInSession: 1, jwks: 2, personToken: 3 };
 		if (rank[next.readinessEvent] >= rank[readiness.readinessEvent]) readiness = next;
-		const requestLimits: AuthHarnessRequestLimits =
-			outerCounter === 'cloudflare-controlled-binding-stand-in'
-				? {
-						backingFailure,
-						outerCounter,
-						proofCase: 'service-page-exact-budget',
-						observations: limitObservations,
-					}
-				: { backingFailure, outerCounter, observations: limitObservations };
+		const requestLimits: AuthHarnessRequestLimits = {
+			...requestLimitIdentity,
+			observations: limitObservations,
+		};
 		await recordProofHarness({
 			requestLimits,
 			receiptId,
@@ -896,6 +899,16 @@ export async function startLocalAuthHarness(
 			const response = await auth('/__auth-proof/fail-next-passkey-user-read', { method: 'POST' });
 			if (!response.ok) throw new Error('Passkey user read fault not armed');
 		},
+		async failNextPasskeyReleaseCleanup(): Promise<void> {
+			const response = await auth('/__auth-proof/passkey-release-failure', { method: 'POST' });
+			if (!response.ok) throw new Error('Passkey release cleanup fault not armed');
+		},
+		async passkeyReleaseFailureState(): Promise<z.infer<typeof passkeyReleaseFailureStateSchema>> {
+			const response = await auth('/__auth-proof/passkey-release-failure');
+			return z
+				.strictObject({ state: passkeyReleaseFailureStateSchema })
+				.parse(await response.json()).state;
+		},
 		async lastSessionInsert() {
 			const response = await auth('/__auth-proof/last-session-insert');
 			if (!response.ok) throw new Error('Session insert recorder unavailable');
@@ -906,7 +919,11 @@ export async function startLocalAuthHarness(
 		async makeLimiterUnavailable(): Promise<void> {
 			const response = await auth('/__auth-proof/limiter-unavailable', { method: 'POST' });
 			if (!response.ok) throw new Error('Limiter failure control was not armed');
-			backingFailure = signInHost === 'node' ? 'node-counter-throws' : 'cloudflare-binding-rejects';
+			requestLimitIdentity = {
+				...requestLimitIdentity,
+				backingFailure:
+					signInHost === 'node' ? 'node-counter-throws' : 'cloudflare-binding-rejects',
+			};
 			await recordTarget(readiness);
 		},
 		async useControlledServicePageWindow(): Promise<void> {
@@ -915,7 +932,25 @@ export async function startLocalAuthHarness(
 			const response = await auth('/__auth-proof/limiter-controlled-window', { method: 'POST' });
 			if (!response.ok) throw new Error('Controlled service-page window was not armed');
 			z.strictObject({ kind: z.literal('controlled-window') }).parse(await response.json());
-			outerCounter = 'cloudflare-controlled-binding-stand-in';
+			requestLimitIdentity = {
+				...requestLimitIdentity,
+				outerCounter: 'cloudflare-controlled-binding-stand-in',
+				proofCase: 'service-page-exact-budget',
+			};
+			await recordTarget(readiness);
+		},
+		async useControlledPasskeyWindow(): Promise<void> {
+			if (signInHost === 'node') return;
+			const response = await auth('/__auth-proof/limiter-controlled-passkey-window', {
+				method: 'POST',
+			});
+			if (!response.ok) throw new Error('Controlled passkey window was not armed');
+			z.strictObject({ kind: z.literal('controlled-passkey-window') }).parse(await response.json());
+			requestLimitIdentity = {
+				...requestLimitIdentity,
+				outerCounter: 'cloudflare-controlled-binding-stand-in',
+				proofCase: 'passkey-exact-budget',
+			};
 			await recordTarget(readiness);
 		},
 		capabilityRecords(): readonly SignInCapabilityRecord[] {

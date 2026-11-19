@@ -126,7 +126,7 @@ function expectConfirmedInsert(
 }
 
 it.each(['missing', 'rejected', 'wrong-action', 'duplicate', 'unavailable'] as const)(
-	'people: public passkey challenge refuses %s without storing a challenge',
+	'public passkey: challenge refuses %s without storing a challenge',
 	async (reason) => {
 		const harness = await startLocalAuthHarness({
 			turnstileSecret: 'published-test',
@@ -163,7 +163,7 @@ it.each(['missing', 'rejected', 'wrong-action', 'duplicate', 'unavailable'] as c
 		}
 	},
 );
-it('people: an accepted public passkey challenge stores exactly one challenge and its cookie', async () => {
+it('public passkey: an accepted challenge stores exactly one challenge and its cookie', async () => {
 	const harness = await startLocalAuthHarness();
 	try {
 		const before = await harness.database.select().from(verification);
@@ -331,11 +331,10 @@ it('people: a removed member cannot sign in with their registered user-verified 
 		harness.useBrowser(invitedEmail);
 		harness.clearBrowserSession();
 		const before = await harness.database.select().from(session);
-		const response = await passkeyPost(
-			harness,
-			'verify-authentication',
-			await assertion(harness, authenticator),
-		);
+		const body = await assertion(harness, authenticator);
+		const lastInsert = await harness.lastSessionInsert();
+		const response = await passkeyPost(harness, 'verify-authentication', body);
+		expect(await harness.lastSessionInsert()).toEqual(lastInsert);
 		expect(response.status).toBe(403);
 		expectSessionCookieAbsent(response);
 		expect(await harness.database.select().from(session)).toEqual(before);
@@ -346,6 +345,39 @@ it('people: a removed member cannot sign in with their registered user-verified 
 		await harness.close();
 	}
 });
+
+it.each(['writable', 'unavailable'] as const)(
+	'people: a release cleanup failure with %s audit storage stays cookie-free',
+	async (auditStorage) => {
+		const harness = await startLocalAuthHarness();
+		try {
+			const { authenticator } = await registered(harness);
+			const body = await assertion(harness, authenticator);
+			const before = await harness.database.select().from(session);
+			if (auditStorage === 'unavailable')
+				await harness.setDatabaseFault({
+					operation: 'insert',
+					table: 'sign_in_audit',
+					key: 'anonymous',
+					auditKind: 'sign-in',
+				});
+			await harness.failNextPasskeyReleaseCleanup();
+			const response = await passkeyPost(harness, 'verify-authentication', body);
+			expect(await harness.passkeyReleaseFailureState()).toBe('cleanup-failed');
+			expect(response.status).toBe(503);
+			expectSessionCookieAbsent(response);
+			expect(await response.json()).toEqual({ error: 'sign-in-unavailable' });
+			expect(await harness.database.select().from(session)).toEqual(before);
+			expect(await audit(harness)).toEqual(
+				auditStorage === 'writable'
+					? [{ kind: 'sign-in', actor: 'anonymous', outcome: 'failed', method: 'passkey' }]
+					: [],
+			);
+		} finally {
+			await harness.close();
+		}
+	},
+);
 it('people: the public sign-in page carries the passkey island, action and nonced bootstrap with its CLI continuation', async () => {
 	const harness = await startLocalAuthHarness();
 	try {

@@ -26,17 +26,26 @@ const controlledPageCounter: AuthHarnessRequestLimits = {
 	backingFailure: 'none',
 	observations: [],
 };
+const controlledPasskeyCounter: AuthHarnessRequestLimits = {
+	...controlledPageCounter,
+	proofCase: 'passkey-exact-budget',
+};
 const workerdBackingFailure: AuthHarnessRequestLimits = {
 	...realWorkerdCounter,
 	backingFailure: 'cloudflare-binding-rejects',
 };
 
-it('admits exactly one named controlled page counter for people on workerd without real-counter credit', () => {
+it('admits exactly one of each named controlled budget for people on workerd without real-counter credit', () => {
 	expect(() =>
 		requireAdmittedRequestLimitCounters({
 			journey: 'people',
 			signInHost: 'workerd',
-			requestLimits: [realWorkerdCounter, controlledPageCounter, workerdBackingFailure],
+			requestLimits: [
+				realWorkerdCounter,
+				controlledPageCounter,
+				controlledPasskeyCounter,
+				workerdBackingFailure,
+			],
 		}),
 	).not.toThrow();
 });
@@ -74,8 +83,21 @@ it('rejects the controlled page counter on Node even in the people journey', () 
 
 it.each([
 	{ name: 'missing', standIns: [] },
-	{ name: 'duplicated', standIns: [controlledPageCounter, controlledPageCounter] },
-])('rejects $name controlled page receipts', ({ standIns }) => {
+	{ name: 'missing passkey', standIns: [controlledPageCounter] },
+	{ name: 'missing page', standIns: [controlledPasskeyCounter] },
+	{
+		name: 'duplicated page replacing passkey',
+		standIns: [controlledPageCounter, controlledPageCounter],
+	},
+	{
+		name: 'duplicated passkey replacing page',
+		standIns: [controlledPasskeyCounter, controlledPasskeyCounter],
+	},
+	{
+		name: 'extra passkey',
+		standIns: [controlledPageCounter, controlledPasskeyCounter, controlledPasskeyCounter],
+	},
+])('rejects $name controlled budget receipts', ({ standIns }) => {
 	expect(() =>
 		requireAdmittedRequestLimitCounters({
 			journey: 'people',

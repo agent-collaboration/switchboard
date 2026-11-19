@@ -10,11 +10,15 @@ import {
 	createDatabaseReadHold,
 	type DatabaseReadHold,
 } from '#sign-in-test-support/test-fixtures/database-proof-holds';
+import { createPasskeyReleaseFailure } from '#sign-in-test-support/test-fixtures/passkey-release-failure';
 
+const passkeyReleaseFailure = createPasskeyReleaseFailure();
 let failNextPasskeyUserRead = false;
 let lastSessionInsert: { readonly query: string; readonly parameters: readonly unknown[] } | null =
 	null;
 export function handlePasskeySessionProofControl(request: Request): Response | null {
+	const releaseFailureControl = passkeyReleaseFailure.control(request);
+	if (releaseFailureControl !== null) return releaseFailureControl;
 	const pathname = new URL(request.url).pathname;
 	if (pathname === '/__auth-proof/fail-next-passkey-user-read' && request.method === 'POST') {
 		failNextPasskeyUserRead = true;
@@ -102,6 +106,7 @@ export function recordingD1Database(
 ): AuthWorkerEnv['DB'] {
 	let failUserReadAfterInsert = false;
 	function rejectFault(call: PreparedDriverCall): void {
+		passkeyReleaseFailure.beforeDriverCall(call);
 		if (/^\s*insert into "session"/iu.test(call.query)) {
 			lastSessionInsert = { query: call.query, parameters: call.parameters };
 			if (failNextPasskeyUserRead) {

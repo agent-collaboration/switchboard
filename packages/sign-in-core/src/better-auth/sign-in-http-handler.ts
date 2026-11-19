@@ -168,6 +168,7 @@ export function createSignInHttpHandler(
 		state: ProviderRequestState,
 	): Promise<Response> {
 		const persons = personSessionPorts(configuration.store.persons);
+		let passkeyAuditPending = false;
 		try {
 			const admission = await admitSignInRequest({
 				request: incomingRequest,
@@ -178,6 +179,7 @@ export function createSignInHttpHandler(
 			const url = new URL(request.url);
 			if (!isPublicSignInRoute(url.pathname, request.method))
 				return Response.json({ error: 'not-found' }, { status: 404 });
+			passkeyAuditPending = url.pathname === '/api/auth/passkey/verify-authentication';
 			if (isFleetAdminRelayRoute(url.pathname))
 				return await relayFleetAdminRequest({
 					request,
@@ -406,13 +408,16 @@ export function createSignInHttpHandler(
 					await configuration.store.bootstrap.recordSignIn({ actor, outcome, method }),
 				);
 			}
-			if (url.pathname === '/api/auth/passkey/verify-authentication')
+			if (url.pathname === '/api/auth/passkey/verify-authentication') {
+				// Completion owns this attempt, including an unavailable audit write.
+				passkeyAuditPending = false;
 				await completePasskeySignIn({
 					response,
 					issuedSessions: state.issuedSessions,
 					recordSignIn: async (record) =>
 						requireStoredValue(await configuration.store.bootstrap.recordSignIn(record)),
 				});
+			}
 			return await renderFactorFormResponse({
 				request,
 				response,
@@ -426,6 +431,16 @@ export function createSignInHttpHandler(
 			await Promise.allSettled(
 				state.createdUserIds.map((personId) => persons.cleanupUnboundPerson(personId)),
 			);
+			if (passkeyAuditPending)
+				// A release rejection skips completion. Attempt its failed record after cleanup;
+				// either an unavailable store result or a rejection still leaves the same 503.
+				await Promise.allSettled([
+					configuration.store.bootstrap.recordSignIn({
+						actor: 'anonymous',
+						outcome: 'failed',
+						method: 'passkey',
+					}),
+				]);
 			return Response.json(
 				{ error: 'sign-in-unavailable' },
 				{ status: 503, headers: { 'cache-control': 'no-store' } },

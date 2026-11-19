@@ -47,7 +47,7 @@ export const admittedBackingFailureReceipts: Readonly<Record<AuthJourney, number
 	'revision-fence': 0,
 };
 
-/** One people/workerd exact-budget case uses a clocked stand-in. Every other receipt stays real. */
+/** Exactly one service-page and one passkey workerd budget case use named clocked stand-ins. */
 export function requireAdmittedRequestLimitCounters(props: {
 	readonly journey: AuthJourney;
 	readonly signInHost: 'workerd' | 'node';
@@ -59,10 +59,14 @@ export function requireAdmittedRequestLimitCounters(props: {
 	const standIns = props.requestLimits.filter(
 		(limits) => limits.outerCounter === 'cloudflare-controlled-binding-stand-in',
 	);
-	const expectedStandIns = props.journey === 'people' && props.signInHost === 'workerd' ? 1 : 0;
+	const expectedPerCase = props.journey === 'people' && props.signInHost === 'workerd' ? 1 : 0;
 	const armedFailures = props.requestLimits.filter((limits) => limits.backingFailure !== 'none');
 	if (
-		standIns.length !== expectedStandIns ||
+		standIns.length !== expectedPerCase * 2 ||
+		standIns.filter((limits) => limits.proofCase === 'service-page-exact-budget').length !==
+			expectedPerCase ||
+		standIns.filter((limits) => limits.proofCase === 'passkey-exact-budget').length !==
+			expectedPerCase ||
 		standIns.some((limits) => limits.backingFailure !== 'none') ||
 		armedFailures.length !== admittedBackingFailureReceipts[props.journey] ||
 		armedFailures.some((limits) => limits.backingFailure !== hostBackingFailure) ||

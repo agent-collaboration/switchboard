@@ -5,6 +5,10 @@ import { handlePasskeySessionProofControl } from '#sign-in-test-support/test-fix
 type LimiterProofMode =
 	| { readonly kind: 'real' }
 	| { readonly kind: 'unavailable' }
+	| {
+			readonly kind: 'controlled-passkey-window';
+			readonly signInAttempts: AuthWorkerEnv['SIGN_IN_ATTEMPTS'];
+	  }
 	| { readonly kind: 'controlled-window'; readonly authRequests: AuthWorkerEnv['AUTH_REQUESTS'] };
 let limiterMode: LimiterProofMode = { kind: 'real' };
 
@@ -13,11 +17,27 @@ export function createControlledServicePageBinding(props: {
 	readonly actualBinding: AuthWorkerEnv['AUTH_REQUESTS'];
 	readonly clock: SignInClock;
 }): AuthWorkerEnv['AUTH_REQUESTS'] {
+	return createControlledRequestClassBinding({ ...props, requestClass: 'service-page' });
+}
+
+export function createControlledPasskeyBinding(props: {
+	readonly actualBinding: AuthWorkerEnv['SIGN_IN_ATTEMPTS'];
+	readonly clock: SignInClock;
+}): AuthWorkerEnv['SIGN_IN_ATTEMPTS'] {
+	return createControlledRequestClassBinding({ ...props, requestClass: 'callback-passkey' });
+}
+
+function createControlledRequestClassBinding(props: {
+	readonly actualBinding: AuthWorkerEnv['AUTH_REQUESTS'];
+	readonly clock: SignInClock;
+	readonly requestClass: 'service-page' | 'callback-passkey';
+}): AuthWorkerEnv['AUTH_REQUESTS'] {
 	const windows = new Map<string, { readonly expiresAt: number; count: number }>();
 	return {
 		async limit(options): Promise<{ readonly success: boolean }> {
-			if (!options.key.startsWith('service-page:')) return props.actualBinding.limit(options);
-			const policy = signInRequestPolicies['service-page'].outer;
+			if (!options.key.startsWith(`${props.requestClass}:`))
+				return props.actualBinding.limit(options);
+			const policy = signInRequestPolicies[props.requestClass].outer;
 			const now = props.clock.now();
 			const window = windows.get(options.key);
 			if (window === undefined || now >= window.expiresAt) {
@@ -54,6 +74,16 @@ export function handleAuthProofLimiterControl(
 		};
 		return Response.json({ kind: 'controlled-window' });
 	}
+	if (pathname === '/__auth-proof/limiter-controlled-passkey-window') {
+		limiterMode = {
+			kind: 'controlled-passkey-window',
+			signInAttempts: createControlledPasskeyBinding({
+				actualBinding: bindings.SIGN_IN_ATTEMPTS,
+				clock,
+			}),
+		};
+		return Response.json({ kind: 'controlled-passkey-window' });
+	}
 	return null;
 }
 
@@ -65,6 +95,8 @@ export function authProofRateLimitBindings(bindings: AuthWorkerEnv): AuthWorkerE
 			return bindings;
 		case 'controlled-window':
 			return { ...bindings, AUTH_REQUESTS: limiterMode.authRequests };
+		case 'controlled-passkey-window':
+			return { ...bindings, SIGN_IN_ATTEMPTS: limiterMode.signInAttempts };
 		case 'unavailable': {
 			const rejectingBinding = {
 				async limit(): Promise<never> {

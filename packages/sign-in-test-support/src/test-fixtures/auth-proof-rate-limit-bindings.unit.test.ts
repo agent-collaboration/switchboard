@@ -1,7 +1,26 @@
 import { epochMillisecondsSchema } from '@agent-collaboration/sign-in-core';
 import { expect, it, vi } from 'vitest';
 
-import { createControlledServicePageBinding } from '#sign-in-test-support/test-fixtures/auth-proof-rate-limit-bindings';
+import {
+	createControlledServicePageBinding,
+	createControlledPasskeyBinding,
+} from '#sign-in-test-support/test-fixtures/auth-proof-rate-limit-bindings';
+
+it('limits only the passkey class at ten in its declared controlled window, with per-address isolation', async (): Promise<void> => {
+	const actualBinding = { limit: vi.fn(async () => ({ success: false })) };
+	const binding = createControlledPasskeyBinding({
+		actualBinding,
+		clock: { now: () => epochMillisecondsSchema.parse(10_000) },
+	});
+	const key = 'callback-passkey:192.0.2.1';
+	expect(await Promise.all(Array.from({ length: 10 }, () => binding.limit({ key })))).toEqual(
+		Array.from({ length: 10 }, () => ({ success: true })),
+	);
+	expect(await binding.limit({ key })).toEqual({ success: false });
+	expect(await binding.limit({ key: 'callback-passkey:192.0.2.2' })).toEqual({ success: true });
+	expect(await binding.limit({ key: 'sign-in:192.0.2.1' })).toEqual({ success: false });
+	expect(actualBinding.limit).toHaveBeenCalledExactlyOnceWith({ key: 'sign-in:192.0.2.1' });
+});
 
 it('refuses request 301 in the controlled window and accepts a different address', async () => {
 	const actualBinding = { limit: vi.fn(async () => ({ success: true })) };

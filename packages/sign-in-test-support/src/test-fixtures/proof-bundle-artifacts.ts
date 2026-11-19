@@ -73,6 +73,7 @@ export async function proofSourceIdentities(
 		'packages/sign-in-test-support/src/test-fixtures/local-auth-harness.ts',
 		'packages/sign-in-test-support/src/test-fixtures/auth-proof-application.ts',
 		'packages/sign-in-test-support/src/test-fixtures/node-auth-proof-host.ts',
+		'packages/sign-in-test-support/src/test-fixtures/passkey-release-failure.ts',
 		'packages/sign-in-test-support/src/test-fixtures/auth-proof-tokens.ts',
 		'packages/sign-in-test-support/src/test-fixtures/authorization-drain-proof.ts',
 		'packages/sign-in-test-support/src/test-fixtures/central-forgot-host.ts',
@@ -294,7 +295,7 @@ export const authHarnessRequestLimitsSchema = z.discriminatedUnion('outerCounter
 	}),
 	requestLimitReceiptFields.extend({
 		outerCounter: z.literal('cloudflare-controlled-binding-stand-in'),
-		proofCase: z.literal('service-page-exact-budget'),
+		proofCase: z.enum(['service-page-exact-budget', 'passkey-exact-budget']),
 	}),
 ]);
 export type AuthHarnessRequestLimits = z.infer<typeof authHarnessRequestLimitsSchema>;

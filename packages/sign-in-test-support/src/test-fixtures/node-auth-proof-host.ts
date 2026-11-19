@@ -68,6 +68,7 @@ import { recordNodeProofInvocationFailure } from '#sign-in-test-support/test-fix
 import { decorateNodeProofStore } from '#sign-in-test-support/test-fixtures/node-proof-store';
 import { withNodeProviderNetwork } from '#sign-in-test-support/test-fixtures/node-provider-network';
 import { handleOrganizationKeyChangeProofRequest } from '#sign-in-test-support/test-fixtures/organization-key-change-proof';
+import { createPasskeyReleaseFailure } from '#sign-in-test-support/test-fixtures/passkey-release-failure';
 import {
 	readPersonConfirmationProbe,
 	personSessionReadKind,
@@ -116,6 +117,7 @@ export async function startNodeAuthProofHost(props: {
 	readonly clientAddress?: NodeSignInSettings['clientAddress'];
 	readonly capabilityRecording?: NodeCapabilityRecordingOption;
 }): Promise<NodeAuthProofHost> {
+	const passkeyReleaseFailure = createPasskeyReleaseFailure();
 	let failNextPasskeyUserRead = false;
 	let lastSessionInsert: {
 		readonly query: string;
@@ -144,6 +146,7 @@ export async function startNodeAuthProofHost(props: {
 		logger: {
 			logQuery(query: string, parameters: unknown[]): void {
 				const call = { query, parameters };
+				passkeyReleaseFailure.beforeDriverCall(call);
 				const passkeyRead = passkeyReads.getStore();
 				if (/^\s*insert into "session"/iu.test(query)) {
 					lastSessionInsert = call;
@@ -426,6 +429,8 @@ export async function startNodeAuthProofHost(props: {
 			return Response.json({ kind: 'settled' });
 		}
 		const pathname = new URL(request.url).pathname;
+		const releaseFailureControl = passkeyReleaseFailure.control(request);
+		if (releaseFailureControl !== null) return releaseFailureControl;
 		if (pathname === captchaObservationDrainPath) return Response.json({ kind: 'complete' });
 		const captchaProof = await handleConfiguredCaptchaProviderProof(request, () => configuration);
 		if (captchaProof !== null) return captchaProof;
