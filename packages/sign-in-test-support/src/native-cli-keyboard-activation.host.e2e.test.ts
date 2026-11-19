@@ -39,7 +39,7 @@ it('activates the same Continue button after a lower sibling moves it between me
 		await page.navigate(
 			'data:text/html,' +
 				encodeURIComponent(
-					'<style>body{margin:0}main{min-height:800px;display:flex;flex-direction:column;justify-content:center}button{width:250px;height:40px}#lower-content{height:0}</style><main><h1>Continue fixture</h1><form id="owner-sign-in"><button id="continue" type="submit">Continue</button></form><div id="lower-content"></div></main>',
+					'<style>html{overflow-anchor:none}body{margin:0}main{min-height:800px;display:flex;flex-direction:column;justify-content:center}button{width:250px;height:40px}#lower-content{height:0}</style><main><h1>Continue fixture</h1><form id="owner-sign-in"><button id="continue" type="submit">Continue</button></form><div id="lower-content"></div></main>',
 				),
 		);
 		await page.evaluate(
