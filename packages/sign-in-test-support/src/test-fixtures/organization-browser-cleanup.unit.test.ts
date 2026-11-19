@@ -56,3 +56,41 @@ it('completes when neither the scenario nor cleanup failed', async (): Promise<v
 		}),
 	).resolves.toBeUndefined();
 });
+
+it('closes owned resources when writing the observation fails', async (): Promise<void> => {
+	const recordingError = new Error('Observation volume refused the write');
+	const closed: string[] = [];
+	const completion = closeOrganizationBrowserScenario({
+		failure: { kind: 'none' },
+		record: async (): Promise<never> => {
+			throw recordingError;
+		},
+		close: async (): Promise<void> => {
+			closed.push('responses', 'chrome', 'harness');
+		},
+	});
+
+	await expect(completion).rejects.toBe(recordingError);
+	expect(closed).toEqual(['responses', 'chrome', 'harness']);
+});
+
+it('retains scenario, recording and close errors in their observed order', async (): Promise<void> => {
+	const scenarioError = new Error('Original People assertion');
+	const recordingError = new Error('Observation write failed');
+	const closeError = new AuthProofCloseError({ kind: 'pendingAtClose', pendingRequests: 1 });
+
+	await expect(
+		closeOrganizationBrowserScenario({
+			failure: { kind: 'failed', error: scenarioError },
+			record: async (): Promise<never> => {
+				throw recordingError;
+			},
+			close: async (): Promise<never> => {
+				throw closeError;
+			},
+		}),
+	).rejects.toMatchObject({
+		cause: scenarioError,
+		errors: [scenarioError, recordingError, closeError],
+	});
+});

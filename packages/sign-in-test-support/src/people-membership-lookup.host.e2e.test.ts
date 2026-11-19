@@ -4,6 +4,10 @@ import { expect, it } from 'vitest';
 
 import { useControlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-node-test-clock';
 import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
+import {
+	captureExpiredSessionCleanup,
+	expectExpiredSessionCleanup,
+} from '#sign-in-test-support/test-fixtures/expired-session-cleanup-proof';
 import { expectOrganizationReadBearerRefusals } from '#sign-in-test-support/test-fixtures/organization-read-bearer-scenario';
 import {
 	createOrganizationReadScenario,
@@ -268,6 +272,60 @@ it('people: malformed lookup bodies and content types get one generic 400 before
 		await harness.close();
 	}
 });
+
+it.each(['invalid-email', 'extra-field'] as const)(
+	'people: lookup clears an expired native session cookie even with an %s body',
+	async (invalidBody): Promise<void> => {
+		const scenario = await createOrganizationReadScenario();
+		const { harness } = scenario;
+		try {
+			const expiresAt = controlledSignInClock.now() + 1_000;
+			await harness.database
+				.update(session)
+				.set({ expiresAt: new Date(expiresAt) })
+				.where(eq(session.id, scenario.ownerSessionId));
+			expect(
+				await harness.database
+					.select({ expiresAt: session.expiresAt })
+					.from(session)
+					.where(eq(session.id, scenario.ownerSessionId)),
+			).toEqual([{ expiresAt: new Date(expiresAt) }]);
+			await setOrganizationReadClock(harness, expiresAt + 1);
+			const before = await captureExpiredSessionCleanup(harness);
+			const counts = await organizationReadCounts(harness);
+			const response = await harness.auth('/api/auth/organization/person-membership', {
+				method: 'POST',
+				headers: { cookie: scenario.ownerCookie, 'content-type': 'application/json' },
+				body: JSON.stringify({
+					organizationId: scenario.organizationId,
+					email: invalidBody === 'invalid-email' ? 'not an email' : 'owner@example.invalid',
+					...(invalidBody === 'extra-field' ? { extra: true } : {}),
+				}),
+			});
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({ error: 'invalid-request' });
+			expect(response.headers.get('cache-control')).toBe('no-store');
+			expect(response.headers.getSetCookie()).toContain(
+				'better-auth.session_token=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax',
+			);
+			expect(await organizationReadCounts(harness)).toEqual(counts);
+			await expectExpiredSessionCleanup({
+				harness,
+				before,
+				response,
+				sessionId: scenario.ownerSessionId,
+				personId: scenario.ownerId,
+				now: expiresAt + 1,
+			});
+		} finally {
+			try {
+				await setOrganizationReadClock(harness, controlledSignInClock.now());
+			} finally {
+				await harness.close();
+			}
+		}
+	},
+);
 
 it.each(['status', 'expiry', 'member-role'] as const)(
 	'people: lookup fails closed on malformed stored %s without shortening the facts or writing',

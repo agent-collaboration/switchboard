@@ -204,7 +204,11 @@ function MembershipChoices(props: OwnerPageProps): React.ReactElement | null {
 		<IslandRoot
 			state={{ kind: 'person-organization-choice', choices, activeOrganizationId }}
 			fallback={
-				<OrganizationChooserCard choices={choices} activeOrganizationId={activeOrganizationId} />
+				<OrganizationChooserCard
+					choices={choices}
+					activeOrganizationId={activeOrganizationId}
+					pending
+				/>
 			}
 		/>
 	);

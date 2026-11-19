@@ -367,7 +367,7 @@ it('the page policy text is exactly main f3b2b88b, with only the nonce value sub
 	);
 });
 
-it('keeps memberships and switching visible after a choice while enabling the CLI continuation', async () => {
+it('keeps membership choices disabled before mount while enabling the selected CLI continuation', async () => {
 	const memberships = [
 		{
 			organizationId: firstOrganizationId,
@@ -411,7 +411,7 @@ it('keeps memberships and switching visible after a choice while enabling the CL
 				page
 					.querySelector(`#choose-organization button[value="${otherId}"]`)
 					?.hasAttribute('disabled'),
-			).toBe(false);
+			).toBe(true);
 			expect(
 				[...page.querySelectorAll('script')].some((script) =>
 					script.textContent?.includes('mountSignInIslands'),
@@ -457,7 +457,7 @@ it('disables the CLI only while a choice is required and keeps a sole membership
 });
 
 it.each(['enroll-app', 'confirm'] as const)(
-	'offers switching without a fresh second factor while %s is pending',
+	'keeps pre-mount choices disabled while %s is pending',
 	async (factorPage) => {
 		const response = minimalOwnerPage({
 			crypto: fixedBytesCrypto,
@@ -481,7 +481,7 @@ it.each(['enroll-app', 'confirm'] as const)(
 			],
 		});
 		const page = await expectPanelDocument(response);
-		expect(page.querySelectorAll('#choose-organization button:not([disabled])')).toHaveLength(2);
+		expect(page.querySelectorAll('#choose-organization button:not([disabled])')).toHaveLength(0);
 		expect(page.querySelector('#owner-sign-in button')?.hasAttribute('disabled')).toBe(true);
 		expect(page.body.textContent).not.toContain('then choose your organization');
 	},

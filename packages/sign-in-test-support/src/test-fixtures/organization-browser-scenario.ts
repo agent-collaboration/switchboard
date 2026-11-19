@@ -194,7 +194,7 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 	} finally {
 		await closeOrganizationBrowserScenario({
 			failure: scenarioFailure,
-			close: async (): Promise<void> => {
+			record: async (): Promise<void> => {
 				await writeFile(
 					path.join(evidence, 'observation.json'),
 					JSON.stringify(
@@ -219,6 +219,8 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 					),
 					{ mode: 0o600 },
 				);
+			},
+			close: async (): Promise<void> => {
 				try {
 					await responses?.close();
 				} finally {

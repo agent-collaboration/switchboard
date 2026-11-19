@@ -16,6 +16,7 @@ import {
 	controlledSignInClock,
 	controlledSignInIds,
 } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
+import { nativeNetworkResponseSchema } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import type { OrganizationBrowserScenario } from '#sign-in-test-support/test-fixtures/organization-browser-scenario';
 import {
 	installOrganizationBrowserCookie,
@@ -243,12 +244,33 @@ export async function exerciseOrganizationPeople(
 		`(()=>{const button=Array.from(document.querySelectorAll('button')).find(node=>node.textContent.trim()==='Look up');button.click();return true;})()`,
 		z.literal(true),
 	);
+	const newerLookupReply = responses.arm((url): boolean => url.pathname === lookupPath);
 	await lookUp(context, 'browser-absent@example.invalid');
-	await expectLookup(context, 'Not a member');
+	const newerLookupHeld = await newerLookupReply;
+	expect(newerLookupHeld.responseStatusCode).toBe(200);
+	expect(newerLookupHeld.networkId).not.toBe(firstHeld.networkId);
 	expect(context.requestedPaths.filter((pathname) => pathname === lookupPath)).toHaveLength(
 		beforeDuplicate + 1,
 	);
-	await responses.release(firstHeld);
+	await page.evaluate(
+		`(()=>{window.organizationLookupPublications=[];const capture=()=>window.organizationLookupPublications.push(document.querySelector(${JSON.stringify(resultRegion)})?.textContent??'');window.organizationLookupObserver=new MutationObserver(capture);window.organizationLookupObserver.observe(document.querySelector(${JSON.stringify(resultRegion)}),{childList:true,subtree:true,characterData:true});capture();return true;})()`,
+		z.literal(true),
+	);
+	try {
+		// A is delivered while B's computed response remains held at Chrome's response boundary.
+		await responses.release(firstHeld);
+		await page.readyWhen('true');
+		const whileNewerLookupPending = await page.evaluate(
+			`({current:document.querySelector(${JSON.stringify(resultRegion)})?.textContent,publications:window.organizationLookupPublications})`,
+			z.object({ current: z.string(), publications: z.array(z.string()) }),
+		);
+		expect(whileNewerLookupPending.current).toBe('Looking up…');
+		expect(whileNewerLookupPending.publications).not.toContain('Invited');
+	} finally {
+		await page.evaluate('window.organizationLookupObserver.disconnect(); true', z.literal(true));
+		await responses.release(newerLookupHeld);
+	}
+	await expectLookup(context, 'Not a member');
 	await page.readyWhen(
 		`document.querySelector(${JSON.stringify(resultRegion)})?.textContent==='Not a member'`,
 	);
@@ -311,16 +333,54 @@ export async function exerciseOrganizationPeople(
 	await page.click('button', 'Next');
 	const page50Held = await page50Reply;
 	expect(page50Held.responseStatusCode).toBe(200);
-	const page100 = await page.responseTo(listPath, async (): Promise<void> =>
-		page.click('button', 'Next'),
+	const page100Reply = responses.arm(
+		(url): boolean => url.pathname === listPath && url.searchParams.get('offset') === '100',
 	);
+	await page.click('button', 'Next');
+	const page100Held = await page100Reply;
+	expect(page100Held.responseStatusCode).toBe(200);
+	expect(page100Held.networkId).not.toBe(page50Held.networkId);
+	// Arm for this exact held request before either response is released.
+	const page100Response = protocol.waitFor('Network.responseReceived', (value): boolean => {
+		const parsed = nativeNetworkResponseSchema.safeParse(value);
+		if (!parsed.success || parsed.data.requestId !== page100Held.networkId) return false;
+		const responseUrl = new URL(parsed.data.response.url);
+		return responseUrl.pathname === listPath && responseUrl.searchParams.get('offset') === '100';
+	});
+	void page100Response.catch(() => undefined);
+	const olderPageEmail = expected[50]?.email;
+	if (olderPageEmail === undefined) throw new Error('Page-50 fixture absent');
+	await page.evaluate(
+		`(()=>{window.organizationListPublications=[];const table=document.querySelector('table[aria-label="Members"]');const capture=()=>window.organizationListPublications.push(table.textContent);window.organizationListObserver=new MutationObserver(capture);window.organizationListObserver.observe(table,{childList:true,subtree:true,characterData:true});capture();return true;})()`,
+		z.literal(true),
+	);
+	try {
+		// Page 50 is delivered while page 100's computed response is still held.
+		await responses.release(page50Held);
+		await page.readyWhen('true');
+		const whilePage100Pending = await page.evaluate(
+			`({loading:!!document.querySelector('table[aria-label="Members"] [aria-label="Loading people"]'),emails:Array.from(document.querySelectorAll('table[aria-label="Members"] tbody button')).map(button=>button.textContent.trim()),publications:window.organizationListPublications})`,
+			z.object({
+				loading: z.boolean(),
+				emails: z.array(z.string()),
+				publications: z.array(z.string()),
+			}),
+		);
+		expect(whilePage100Pending.loading).toBe(true);
+		expect(whilePage100Pending.emails).toEqual([]);
+		expect(whilePage100Pending.publications.join('\n')).not.toContain(olderPageEmail);
+	} finally {
+		await page.evaluate('window.organizationListObserver.disconnect(); true', z.literal(true));
+		await responses.release(page100Held);
+	}
+	const page100 = nativeNetworkResponseSchema.parse(await page100Response);
+	expect(page100.requestId).toBe(page100Held.networkId);
 	expect(new URL(page100.response.url).searchParams.get('offset')).toBe('100');
 	await organizationDomReady(
 		page,
 		`document.querySelectorAll('table[aria-label="Members"] tbody tr').length===1`,
 	);
 	expect(await memberEmails(context)).toEqual(expected.slice(100).map((person) => person.email));
-	await responses.release(page50Held);
 	await page.readyWhen(
 		`document.querySelectorAll('table[aria-label="Members"] tbody tr').length===1`,
 	);

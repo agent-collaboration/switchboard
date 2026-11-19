@@ -121,11 +121,12 @@ export async function handleSignInRequest(props: {
 		tokenGrant = body.get('grant_type') === 'client_credentials' ? 'client_credentials' : 'person';
 	}
 	const response = await props.providerHandler(props.request);
-	if (pathname === '/api/auth/organization/person-membership' && response.status === 400)
-		return Response.json(
-			{ error: 'invalid-request' },
-			{ status: 400, headers: { 'cache-control': 'no-store' } },
-		);
+	if (pathname === '/api/auth/organization/person-membership' && response.status === 400) {
+		const headers = new Headers(response.headers);
+		headers.set('cache-control', 'no-store');
+		headers.delete('content-length');
+		return Response.json({ error: 'invalid-request' }, { status: 400, headers });
+	}
 	return organizationReadResponse(
 		props.request,
 		await releaseSignInResponse({
