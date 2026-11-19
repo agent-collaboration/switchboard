@@ -256,15 +256,15 @@ export function createUpstreamMcpClientRuntime(
 						},
 					);
 					assertUpstreamResponseSize(upstreamResult, maxResponseBytes);
-					const redactedUpstreamResult = redactUpstreamResponse(upstreamResult, {
-						exactValues: redactionValues,
-					});
-					if (isMcpToolErrorResult(redactedUpstreamResult)) {
+					const redactionOptions = { exactValues: redactionValues };
+					if (isMcpToolErrorResult(upstreamResult)) {
 						if (server === undefined) {
 							throw new Error(`Unknown upstream MCP namespace "${call.namespace}".`);
 						}
-						const providerErrorMessage =
-							providerErrorMessageFromMcpToolError(redactedUpstreamResult);
+						const providerErrorMessage = providerErrorMessageFromMcpToolError(
+							upstreamResult,
+							redactionOptions,
+						);
 						throw createUpstreamMcpError({
 							causeMessage: 'Remote MCP tool returned an error result.',
 							elapsedMs: elapsedMsSince(startedAt),
@@ -278,7 +278,7 @@ export function createUpstreamMcpClientRuntime(
 							transport: transportSummaryFromServer(server),
 						});
 					}
-					return redactedUpstreamResult;
+					return redactUpstreamResponse(upstreamResult, redactionOptions);
 				} finally {
 					timeoutAbort.dispose();
 				}

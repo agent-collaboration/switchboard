@@ -1,5 +1,7 @@
+import { StringDecoder } from 'node:string_decoder';
+
 import {
-	redactCredentialText,
+	createCredentialTextRedactor,
 	type UpstreamMcpRuntimeOptions,
 } from '@agent-collaboration/tool-engine/upstream-mcp-connectors';
 import {
@@ -59,6 +61,18 @@ export function createNodeStdioUpstreamTransport(
 ): StdioRuntimeOptions['createUpstreamMcpTransport'] {
 	return (server) => {
 		const env = server.env ?? {};
+		const decoder = new StringDecoder('utf8');
+		const redactor = createCredentialTextRedactor({ exactValues: Object.values(env) });
+		let finished = false;
+		const deliver = (text: string): void => {
+			if (text.length > 0) props.stderr?.(text);
+		};
+		const finish = (): void => {
+			if (finished) return;
+			finished = true;
+			deliver(redactor.write(decoder.end()));
+			deliver(redactor.end());
+		};
 		const transport = new StdioClientTransport({
 			command: server.command,
 			...(server.args === undefined ? {} : { args: [...server.args] }),
@@ -67,9 +81,23 @@ export function createNodeStdioUpstreamTransport(
 			stderr: 'pipe',
 		});
 		transport.stderr?.on('data', (chunk: Buffer | string): void => {
-			props.stderr?.(redactCredentialText(String(chunk), { exactValues: Object.values(env) }));
+			if (!finished && props.stderr !== undefined)
+				deliver(
+					redactor.write(decoder.write(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)),
+				);
 		});
-		return withOrderedStdioMessages(transport);
+		transport.stderr?.once('end', finish);
+		transport.stderr?.once('close', finish);
+		const orderedTransport = withOrderedStdioMessages(transport);
+		const closeTransport = orderedTransport.close.bind(orderedTransport);
+		orderedTransport.close = async (): Promise<void> => {
+			try {
+				await closeTransport();
+			} finally {
+				finish();
+			}
+		};
+		return orderedTransport;
 	};
 }
 
