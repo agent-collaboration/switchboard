@@ -1,6 +1,34 @@
 import { expect, it } from 'vitest';
 
-import { finishNativeBrowserScenario } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import {
+	finishNativeBrowserScenario,
+	withNativeBrowserCleanup,
+} from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import { createNativeBrowserProgress } from '#sign-in-test-support/test-fixtures/native-browser-progress';
+
+it('runs registration cancellation after a rejected checkpoint and keeps the native error decisive', async () => {
+	const nativeFailure = new Error('Native registration rejected');
+	const recordingFailure = new Error('Cancellation checkpoint rejected');
+	let cancelled = false;
+	const progress = createNativeBrowserProgress({
+		steps: () => [],
+		write: async (): Promise<never> => {
+			throw recordingFailure;
+		},
+	});
+	const registration = withNativeBrowserCleanup(
+		() => Promise.race([Promise.reject(nativeFailure), Promise.withResolvers<never>().promise]),
+		() =>
+			progress.observeCleanup('registration cancellation', async (): Promise<void> => {
+				cancelled = true;
+			}),
+	);
+	await expect(registration).rejects.toMatchObject({
+		cause: nativeFailure,
+		errors: [nativeFailure, expect.any(AggregateError)],
+	});
+	expect(cancelled).toBe(true);
+});
 
 it('persists the original failure and reaches close while capture never resolves', async () => {
 	// Arrange: the capture checkpoint observes its initiating continuation, without a clock.

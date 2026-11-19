@@ -2,6 +2,35 @@ export type NativeBrowserFailure =
 	| { readonly kind: 'none' }
 	| { readonly kind: 'failed'; readonly error: unknown };
 
+/** A rejected cleanup cannot replace the operation's deciding error. */
+export async function withNativeBrowserCleanup<TValue>(
+	perform: () => Promise<TValue>,
+	cleanup: () => Promise<void>,
+): Promise<TValue> {
+	let outcome:
+		| { readonly kind: 'returned'; readonly value: TValue }
+		| { readonly kind: 'failed'; readonly error: unknown };
+	const failures: unknown[] = [];
+	try {
+		outcome = { kind: 'returned', value: await perform() };
+	} catch (error) {
+		outcome = { kind: 'failed', error };
+		failures.push(error);
+	}
+	try {
+		await cleanup();
+	} catch (error) {
+		failures.push(error);
+	}
+	if (failures.length === 1) throw failures[0];
+	if (failures.length > 1)
+		throw new AggregateError(failures, 'Native operation and cleanup failed', {
+			cause: failures[0],
+		});
+	if (outcome.kind === 'failed') throw outcome.error;
+	return outcome.value;
+}
+
 export interface NativeBrowserCompletion {
 	readonly failure: NativeBrowserFailure;
 	readonly recordFailure: () => Promise<void>;
