@@ -22,6 +22,10 @@ import {
 	type ChromeProtocol,
 } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
 import { exerciseOrganizationChooser } from '#sign-in-test-support/test-fixtures/organization-browser-chooser';
+import {
+	closeOrganizationBrowserScenario,
+	type OrganizationBrowserFailure,
+} from '#sign-in-test-support/test-fixtures/organization-browser-cleanup';
 import { exerciseOrganizationPeople } from '#sign-in-test-support/test-fixtures/organization-browser-people';
 import {
 	installOrganizationBrowserCookie,
@@ -65,6 +69,7 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 	const screenshots: string[] = [];
 	const requestedPaths: string[] = [];
 	let status: 'passed' | 'failed' = 'failed';
+	let scenarioFailure: OrganizationBrowserFailure = { kind: 'none' };
 	try {
 		const initial = organizationPersonTokenClaimsSchema.parse(
 			decodeJwt(await harness.ownerToken()),
@@ -184,39 +189,46 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 			(await promisify(execFile)('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
 		).toBe(sourceRevision);
 		status = 'passed';
+	} catch (error) {
+		scenarioFailure = { kind: 'failed', error };
 	} finally {
-		await writeFile(
-			path.join(evidence, 'observation.json'),
-			JSON.stringify(
-				{
-					sourceRevision,
-					host,
-					kind,
-					status,
-					screenshots,
-					requestedPaths,
-					standIns: [
-						'external identity provider',
-						'Turnstile siteverify',
-						'Central',
-						'software authenticator',
-						'controlled clock',
-					],
-					notCovered: ['hosted deployment', 'real provider sign-in', 'physical authenticator'],
-				},
-				null,
-				2,
-			),
-			{ mode: 0o600 },
-		);
-		try {
-			await responses?.close();
-		} finally {
-			try {
-				await chrome?.close();
-			} finally {
-				await harness.close();
-			}
-		}
+		await closeOrganizationBrowserScenario({
+			failure: scenarioFailure,
+			close: async (): Promise<void> => {
+				await writeFile(
+					path.join(evidence, 'observation.json'),
+					JSON.stringify(
+						{
+							sourceRevision,
+							host,
+							kind,
+							status,
+							screenshots,
+							requestedPaths,
+							standIns: [
+								'external identity provider',
+								'Turnstile siteverify',
+								'Central',
+								'software authenticator',
+								'controlled clock',
+							],
+							notCovered: ['hosted deployment', 'real provider sign-in', 'physical authenticator'],
+						},
+						null,
+						2,
+					),
+					{ mode: 0o600 },
+				);
+				try {
+					await responses?.close();
+				} finally {
+					try {
+						await chrome?.close();
+					} finally {
+						await harness.close();
+					}
+				}
+			},
+		});
 	}
 }
