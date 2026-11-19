@@ -124,6 +124,7 @@ it('rejects a stand-in that also claims the separate backing-failure proof', () 
 			requestLimits: [
 				realWorkerdCounter,
 				{ ...controlledPageCounter, backingFailure: 'cloudflare-binding-rejects' },
+				controlledPasskeyCounter,
 			],
 		}),
 	).toThrow('counters differ');
