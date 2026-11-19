@@ -28,6 +28,7 @@ const providerControlSchema = z.discriminatedUnion('endpoint', [
 		assertion: z.record(z.string(), z.unknown()),
 	}),
 ]);
+const captchaProviderProofPath = '/__auth-proof/captcha-provider';
 
 const nativeCaptchaOptionsSchema = z.object({
 	provider: z.literal('cloudflare-turnstile'),
@@ -55,12 +56,12 @@ async function describeCaptchaResponse(
 		: { kind: 'response', status: response.status, body: await response.text() };
 }
 
-/** Provider-level only. Public passkey routes remain refused by production.
- * Requests still traverse Better Auth's actual handler and captcha hooks. */
+/** Provider-level only. Ordinary requests keep their original body for the production handler. */
 export async function handleCaptchaProviderProof(
 	request: Request,
 	bindings: AuthWorkerEnv,
 ): Promise<Response | null> {
+	if (new URL(request.url).pathname !== captchaProviderProofPath) return null;
 	return handleConfiguredCaptchaProviderProof(
 		new Request(request, { headers: workerClientAddressHeaders(request.headers) }),
 		() => signInWorkerConfiguration(bindings),
@@ -71,7 +72,7 @@ export async function handleConfiguredCaptchaProviderProof(
 	request: Request,
 	hostConfiguration: () => SignInHttpConfiguration,
 ): Promise<Response | null> {
-	if (new URL(request.url).pathname !== '/__auth-proof/captcha-provider') return null;
+	if (new URL(request.url).pathname !== captchaProviderProofPath) return null;
 	const control = providerControlSchema.parse(await request.json());
 	const host = hostConfiguration();
 	const configuration =
