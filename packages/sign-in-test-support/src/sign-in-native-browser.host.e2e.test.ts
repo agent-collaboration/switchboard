@@ -16,9 +16,9 @@ it.each(hosts)('F native Better Auth factor and owner pages on %s', async (host)
 	await runProofBrowserScenario((signal) => observeNativeFactorBrowser(host, signal));
 });
 
-it.each(hosts.flatMap((host) => passkeyCases.map((scenario) => ({ host, scenario }))))(
-	'passkey $scenario on $host',
-	async ({ host, scenario }): Promise<void> => {
+it.each(hosts.flatMap((host) => passkeyCases.map((scenario) => [scenario, host] as const)))(
+	'passkey %s on %s',
+	async (scenario, host): Promise<void> => {
 		await runProofBrowserScenario((signal) => observeNativePasskeyBrowser(host, scenario, signal));
 	},
 );
