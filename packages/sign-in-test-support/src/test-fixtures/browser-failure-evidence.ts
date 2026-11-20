@@ -5,6 +5,8 @@ import path from 'node:path';
 import type { Page } from 'playwright';
 import { z } from 'zod';
 
+import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
+
 const pointerGesture = z.strictObject({
 	event: z.enum(['mousedown', 'mouseup', 'click']),
 	trusted: z.boolean(),
@@ -26,11 +28,13 @@ export const browserPointerBinding = 'reportProofBrowserPointer';
 
 /** Retains only fields suitable for the public repository's failure artifact. */
 export class BrowserFailureEvidence {
-	private readonly startedAt = performance.now();
+	private sequence = 0;
 	private lastAwait = 'launch Chromium';
-	private listCommitAt?: number;
-	private measuredButton?: MeasuredButtonRect;
-	private readonly pointerGestures: z.infer<typeof pointerGesture>[] = [];
+	private listCommit?: { readonly sequence: number; readonly controlledMilliseconds: number };
+	private measuredButton?: MeasuredButtonRect & { readonly sequence: number };
+	private readonly pointerGestures: (z.infer<typeof pointerGesture> & {
+		readonly sequence: number;
+	})[] = [];
 	private lastNetworkRequest?: string;
 
 	constructor(private readonly evidenceDirectory: string) {}
@@ -39,7 +43,7 @@ export class BrowserFailureEvidence {
 		await page.exposeBinding(browserPointerBinding, ({ frame }, value: unknown): void => {
 			const gesture = pointerGesture.safeParse(value);
 			if (frame === page.mainFrame() && gesture.success && this.pointerGestures.length < 3)
-				this.pointerGestures.push(gesture.data);
+				this.pointerGestures.push({ ...gesture.data, sequence: ++this.sequence });
 		});
 		page.on('request', (request): void => {
 			const url = new URL(request.url());
@@ -57,11 +61,14 @@ export class BrowserFailureEvidence {
 	}
 
 	recordListCommit(): void {
-		this.listCommitAt = performance.now() - this.startedAt;
+		this.listCommit = {
+			sequence: ++this.sequence,
+			controlledMilliseconds: controlledSignInClock.now(),
+		};
 	}
 
 	recordMeasurement(rect: MeasuredButtonRect): void {
-		this.measuredButton = rect;
+		this.measuredButton = { ...rect, sequence: ++this.sequence };
 		this.pointerGestures.length = 0;
 	}
 
@@ -79,7 +86,7 @@ export class BrowserFailureEvidence {
 		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const output = [
 			`last await = ${this.lastAwait}`,
-			`list commit = ${this.listCommitAt === undefined ? 'never' : `${this.listCommitAt.toFixed(1)} ms after browser startup began`}`,
+			`list commit = ${this.listCommit === undefined ? 'never' : JSON.stringify(this.listCommit)}`,
 			`measured button rect = ${this.measuredButton === undefined ? 'never' : JSON.stringify(this.measuredButton)}`,
 			`actual pointer gestures = ${JSON.stringify(this.pointerGestures)}`,
 			`last network request = ${this.lastNetworkRequest ?? 'never'}`,
