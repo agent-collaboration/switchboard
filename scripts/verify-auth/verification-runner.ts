@@ -464,7 +464,7 @@ async function security(context: Context, check: SecurityCheck): Promise<readonl
 	const rows: DecidingFacts[] = [];
 	let phase: SecurityPhase = {
 		kind: 'prepared',
-		expectedAssertion: `${location.file}:${location.line}`,
+		expectedAssertion: `${location.file}:${location.line}:${location.column}`,
 	};
 	while (true) {
 		const effect = securityPhaseEffect(phase);

@@ -84,12 +84,30 @@ jobs:
       - wait-all:
 
       - name: Record browser version
-        run: pnpm --filter ./packages/sign-in-test-support exec playwright --version
+        run: |
+          pnpm --filter ./packages/sign-in-test-support exec playwright --version
+          pnpm --filter ./packages/sign-in-test-support exec node --input-type=module -e '
+            import { chromium } from "playwright";
+            const browser = await chromium.launch({ timeout: 0 });
+            try {
+              console.log(`Chromium ${browser.version()}`);
+            } finally {
+              await browser.close();
+            }
+          '
 
       - name: Run E2E lane
         env:
           AGENT_VM_E2E_SKIP_WORKSPACE_BUILD: '1'
         run: pnpm run test:e2e:${{ matrix.lane }}
+
+      - name: Upload browser failure summaries
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sign-in-browser-failures
+          path: ${{ runner.temp }}/switchboard-browser-failures/*.txt
+          if-no-files-found: ignore
 
   check:
     name: check

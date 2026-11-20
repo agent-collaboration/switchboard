@@ -164,8 +164,15 @@ export async function observeNativePasskeyBrowser(
 			},
 		);
 		const target = harness;
-		chrome = await observeAwait('setup: Playwright browser launch', () =>
-			launchProofBrowser({ evidence, origin: target.issuer, observeAwait, scenarioSignal }),
+		if (target.signInHost !== host)
+			throw new Error(`Requested ${host} browser scenario resolved ${target.signInHost}`);
+		chrome = await observeNativeAcquisition(
+			observeAwait,
+			'setup: Playwright browser launch',
+			() => launchProofBrowser({ evidence, origin: target.issuer, observeAwait, scenarioSignal }),
+			(acquired): void => {
+				chrome = acquired;
+			},
 		);
 		const protocol = chrome.protocol;
 		browser = chrome;
@@ -324,6 +331,10 @@ export async function observeNativePasskeyBrowser(
 		await observeAwait('organization: name input', () =>
 			page.enter('input[name="organizationName"]', 'Passkey browser organization'),
 		);
+		// The destination's passkey list can reply before the navigation await returns.
+		const initialListResponse = page.armGetResponse(
+			`${target.issuer}/api/auth/passkey/list-user-passkeys`,
+		);
 		const organization = await observeAwait('organization: creation response and navigation', () =>
 			page.responseTo('/api/auth/organization/create', () =>
 				page.afterNavigation('/owner-ready', () =>
@@ -366,7 +377,12 @@ export async function observeNativePasskeyBrowser(
 		});
 		registrationObservation = currentRegistrationObservation;
 		await currentRegistrationObservation.install(page, observeAwait);
-		const registered = await registerNativePasskey({ page, observeAwait, observeCleanup });
+		const registered = await registerNativePasskey({
+			page,
+			initialListResponse,
+			observeAwait,
+			observeCleanup,
+		});
 		if (registered.response.status !== 200)
 			throw new Error('Native virtual passkey registration refused');
 		await observeAwait('registration: verify response body', () => page.readBody(registered));
@@ -571,6 +587,7 @@ export async function observeNativePasskeyBrowser(
 						target: target.target,
 						repositoryRoot: root,
 						cancelBrowser: () => page.cancel('Delivered CLI ended before browser completion'),
+						signal: scenarioSignal,
 						profile: {
 							kind: 'clock',
 							nowMilliseconds: controlledSignInClock.now(),

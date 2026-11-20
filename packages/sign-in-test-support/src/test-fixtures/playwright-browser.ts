@@ -2,10 +2,20 @@ import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { chromium, type BrowserContext, type CDPSession, type Page } from 'playwright';
-import { onTestFinished } from 'vitest';
+import {
+	chromium,
+	type BrowserContext,
+	type CDPSession,
+	type Page,
+	type Response,
+} from 'playwright';
+import { onTestFailed, onTestFinished } from 'vitest';
 import type { z } from 'zod';
 
+import {
+	BrowserFailureEvidence,
+	browserPointerBinding,
+} from '#sign-in-test-support/test-fixtures/browser-failure-evidence';
 import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
 import {
 	executeNativeAwait,
@@ -48,9 +58,18 @@ export async function launchProofBrowser(props: {
 	readonly observeAwait?: NativeAwaitObserver;
 	readonly scenarioSignal?: AbortSignal;
 }): Promise<PlaywrightBrowserPage> {
+	const failureEvidence = new BrowserFailureEvidence(props.evidence);
+	onTestFailed(async (): Promise<void> => {
+		try {
+			await failureEvidence.writeOnFailure();
+		} catch {
+			process.stderr.write('Browser failure evidence could not be written\n');
+		}
+	});
 	props.scenarioSignal?.throwIfAborted();
 	const browser = await chromium.launch({ timeout: 0 });
 	try {
+		failureEvidence.waitFor('create browser context');
 		const context = await browser.newContext({
 			viewport: { width: props.width ?? 400, height: 844 },
 			isMobile: true,
@@ -59,7 +78,9 @@ export async function launchProofBrowser(props: {
 		});
 		context.setDefaultTimeout(0);
 		context.setDefaultNavigationTimeout(0);
+		failureEvidence.waitFor('open proof page and install input observation');
 		const page = await context.newPage();
+		await failureEvidence.observePage(page, props.origin);
 		const protocol = await context.newCDPSession(page);
 		const proofPage = new PlaywrightBrowserPage({
 			page,
@@ -67,6 +88,7 @@ export async function launchProofBrowser(props: {
 			protocol,
 			origin: props.origin,
 			evidence: props.evidence,
+			failureEvidence,
 			observeAwait: props.observeAwait ?? executeNativeAwait,
 			closeBrowser: () => browser.close(),
 			browserConnected: () => browser.isConnected(),
@@ -94,6 +116,7 @@ interface BrowserPageOptions {
 	readonly protocol: CDPSession;
 	readonly origin: string | undefined;
 	readonly evidence: string;
+	readonly failureEvidence: BrowserFailureEvidence;
 	readonly observeAwait: NativeAwaitObserver;
 	readonly closeBrowser: () => Promise<void>;
 	readonly browserConnected: () => boolean;
@@ -177,18 +200,51 @@ export class PlaywrightBrowserPage {
 		return authenticatorId;
 	}
 
+	recordAwait(operation: string): void {
+		this.options.failureEvidence.waitFor(operation);
+	}
+
+	recordPasskeyListCommit(): void {
+		this.options.failureEvidence.recordListCommit();
+	}
+
+	armGetResponse(url: string): Promise<Response> {
+		const expected = new URL(url);
+		const response = this.page.waitForResponse(
+			(candidate) => {
+				const actual = new URL(candidate.url());
+				return (
+					candidate.request().method() === 'GET' &&
+					actual.origin === expected.origin &&
+					actual.pathname === expected.pathname
+				);
+			},
+			{ timeout: 0 },
+		);
+		void response.catch(() => undefined);
+		return response;
+	}
+
 	async evaluate<TValue>(
 		expression: string,
 		schema: z.ZodType<TValue>,
-		observeAwait = this.options.observeAwait,
+		observeAwait?: NativeAwaitObserver,
 	): Promise<TValue> {
+		if (observeAwait === undefined) this.recordAwait('page evaluation');
 		return schema.parse(
-			await observeAwait('Playwright page evaluation', () => this.page.evaluate(expression)),
+			await (observeAwait ?? this.options.observeAwait)('Playwright page evaluation', () =>
+				this.page.evaluate(expression),
+			),
 		);
 	}
 
-	async readyWhen(predicate: string): Promise<void> {
-		await this.options.observeAwait('Playwright DOM readiness', async (): Promise<void> => {
+	async readyWhen(
+		predicate: string,
+		operation = 'DOM readiness',
+		onReady?: () => void,
+	): Promise<void> {
+		this.recordAwait(operation);
+		await this.options.observeAwait(operation, async (): Promise<void> => {
 			await this.page.evaluate(`new Promise(resolve=>{
 const listeners=['load','error','DOMContentLoaded'];
 const observer=new MutationObserver(inspect);
@@ -197,6 +253,7 @@ observer.observe(document,{subtree:true,childList:true,attributes:true,character
 for(const name of listeners)document.addEventListener(name,inspect,true);
 inspect();
 })`);
+			onReady?.();
 			await this.page.evaluate(() => document.fonts.ready.then(() => undefined));
 			await this.page.evaluate(
 				() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
@@ -205,6 +262,7 @@ inspect();
 	}
 
 	async navigate(url: string): Promise<void> {
+		this.recordAwait('navigation through DOMContentLoaded');
 		await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 0 });
 	}
 
@@ -223,7 +281,9 @@ inspect();
 		});
 		try {
 			await action();
+			this.recordAwait('main-frame navigation');
 			await navigation.completed;
+			this.recordAwait('navigated document DOMContentLoaded');
 			await this.page.waitForLoadState('domcontentloaded', { timeout: 0 });
 		} finally {
 			navigation.cancel();
@@ -231,8 +291,9 @@ inspect();
 	}
 
 	async click(selector: string, label?: string): Promise<void> {
-		const point = await this.page.evaluate(
-			({ selector: targetSelector, label: targetLabel }) => {
+		this.recordAwait('measure pointer target');
+		const measurement = await this.page.evaluate(
+			({ selector: targetSelector, label: targetLabel, bindingName }) => {
 				const control = [...document.querySelectorAll<HTMLElement>(targetSelector)].find(
 					(element) => targetLabel === undefined || element.textContent?.trim() === targetLabel,
 				);
@@ -242,13 +303,57 @@ inspect();
 				const bounds = control.getBoundingClientRect();
 				const clickX = bounds.left + bounds.width / 2;
 				const clickY = bounds.top + bounds.height / 2;
-				if (!control.contains(document.elementFromPoint(clickX, clickY)))
-					throw new Error(`Proof control does not receive pointer input: ${targetSelector}`);
-				return { clickX, clickY };
+				const rect = {
+					left: bounds.left,
+					top: bounds.top,
+					width: bounds.width,
+					height: bounds.height,
+				};
+				const hit = control.contains(document.elementFromPoint(clickX, clickY));
+				if (hit) {
+					const observation: unknown = Reflect.get(globalThis, bindingName);
+					if (typeof observation === 'function') {
+						for (const event of ['mousedown', 'mouseup', 'click'] as const) {
+							document.addEventListener(
+								event,
+								(pointer) => {
+									const target = pointer.target instanceof Element ? pointer.target : null;
+									const button = target?.closest('button');
+									const label = button?.textContent?.trim();
+									const reported: unknown = Reflect.apply(observation, undefined, [
+										{
+											event,
+											trusted: pointer.isTrusted,
+											expectedControl: target !== null && control.contains(target),
+											targetTag: target?.tagName.toLowerCase() ?? 'none',
+											button:
+												label === 'Add passkey' ? 'add-passkey' : button ? 'other-button' : 'none',
+											clientX: pointer.clientX,
+											clientY: pointer.clientY,
+										},
+									]);
+									void Promise.resolve(reported).catch(() => undefined);
+								},
+								{ capture: true, once: true },
+							);
+						}
+					}
+				}
+				return { rect, clickX, clickY, hit };
 			},
-			{ selector, label },
+			{ selector, label, bindingName: browserPointerBinding },
 		);
-		await this.page.mouse.click(point.clickX, point.clickY);
+		this.options.failureEvidence.recordMeasurement(measurement.rect);
+		if (!measurement.hit)
+			throw new Error(`Proof control does not receive pointer input: ${selector}`);
+		this.recordAwait('dispatch native pointer click');
+		await this.page.mouse.click(measurement.clickX, measurement.clickY);
+		if (!this.options.failureEvidence.observedTrustedClick()) {
+			// Fence delivery of browser binding messages through the completed gesture.
+			await this.page.evaluate(() => undefined).catch(() => undefined);
+			if (!this.options.failureEvidence.observedTrustedClick())
+				throw new Error(`Trusted click missed the intended control: ${selector}`);
+		}
 	}
 
 	async focusButton(selector: string, label: string): Promise<void> {
@@ -283,6 +388,7 @@ inspect();
 	}
 
 	async screenshot(name: string): Promise<BrowserScreenshot> {
+		this.recordAwait('capture normal browser screenshot');
 		await this.page.evaluate(() => {
 			scrollTo(0, 0);
 		});
@@ -305,6 +411,7 @@ inspect();
 		);
 		try {
 			await action();
+			this.recordAwait(`response from ${pathname}`);
 			return await pending.completed;
 		} finally {
 			pending.cancel();
@@ -312,6 +419,7 @@ inspect();
 	}
 
 	readBody(response: BrowserNetworkResponse): Promise<unknown> {
+		this.recordAwait('read completed browser response body');
 		return this.network.readBody(response.requestId).then((body): unknown => JSON.parse(body));
 	}
 }

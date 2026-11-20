@@ -38,6 +38,14 @@ describe('Switchboard CI workflow topology', () => {
 			expect(host).toContain(`uses: ./.github/actions/${action}`);
 		}
 		expect(host).not.toContain('uses: ./.github/actions/setup-python-workspace');
+		const aptWait = host.indexOf('      - wait: system-packages');
+		const chromiumInstall = host.indexOf('      - name: Install Chromium for Playwright');
+		const waitAll = host.indexOf('      - wait-all:');
+		const hostTests = host.indexOf('      - name: Run E2E lane');
+		expect(aptWait).toBeGreaterThan(-1);
+		expect(chromiumInstall).toBeGreaterThan(aptWait);
+		expect(waitAll).toBeGreaterThan(chromiumInstall);
+		expect(hostTests).toBeGreaterThan(waitAll);
 		expect(host).toContain('run: pnpm run test:e2e:${{ matrix.lane }}');
 		expect(host).not.toMatch(/continue-on-error|--exclude|--retry/u);
 	});

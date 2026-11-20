@@ -16,8 +16,10 @@ const targetSchema = z.object({
 	classes: z.array(z.string()),
 });
 
-/** The fixture moves after its old rect is read, without a timer or synthetic click. */
-async function observeNativeClick(shiftAfterMeasurement: boolean): Promise<{
+type ClickLayout = 'stable' | 'measure-then-shift' | 'hit-test-then-shift';
+
+/** Forces the layout changes at separate browser actions, with native input. */
+async function observeNativeClick(layout: ClickLayout): Promise<{
 	readonly error: string | null;
 	readonly clicks: readonly z.infer<typeof targetSchema>[];
 }> {
@@ -35,7 +37,7 @@ async function observeNativeClick(shiftAfterMeasurement: boolean): Promise<{
 					),
 			);
 			await page.evaluate(
-				`(()=>{const button=document.querySelector('#continue');window.nativeClickInputs=[];document.addEventListener('click',event=>window.nativeClickInputs.push({expectedControl:event.target===button,trusted:event.isTrusted,tag:event.target.tagName.toLowerCase(),id:event.target.id,classes:[...event.target.classList]}),true);if(${JSON.stringify(shiftAfterMeasurement)}){const measure=button.getBoundingClientRect.bind(button);button.getBoundingClientRect=()=>{const rect=measure();button.style.transform='translateY(200px)';return rect;};}return true;})()`,
+				`(()=>{const button=document.querySelector('#continue');window.nativeClickInputs=[];document.addEventListener('click',event=>window.nativeClickInputs.push({expectedControl:event.target===button,trusted:event.isTrusted,tag:event.target.tagName.toLowerCase(),id:event.target.id,classes:[...event.target.classList]}),true);const layout=${JSON.stringify(layout)};if(layout==='measure-then-shift'){const measure=button.getBoundingClientRect.bind(button);button.getBoundingClientRect=()=>{const rect=measure();button.style.transform='translateY(200px)';return rect;};}if(layout==='hit-test-then-shift'){const inspect=document.elementFromPoint.bind(document);document.elementFromPoint=(...coordinates)=>{const hit=inspect(...coordinates);button.style.transform='translateY(200px)';return hit;};}return true;})()`,
 				z.literal(true),
 			);
 			let error: string | null = null;
@@ -47,14 +49,14 @@ async function observeNativeClick(shiftAfterMeasurement: boolean): Promise<{
 			const clicks = await page.evaluate('window.nativeClickInputs', z.array(targetSchema));
 			await writeFile(
 				path.join(evidence, 'click-observation.json'),
-				JSON.stringify({ shiftAfterMeasurement, error, clicks }, null, 2),
+				JSON.stringify({ layout, error, clicks }, null, 2),
 				{ mode: 0o600 },
 			);
 			process.stdout.write(
 				JSON.stringify({
 					event: 'native-click-regression',
 					evidence,
-					shiftAfterMeasurement,
+					layout,
 					error,
 					clicks,
 				}) + '\n',
@@ -67,7 +69,7 @@ async function observeNativeClick(shiftAfterMeasurement: boolean): Promise<{
 
 it('rejects a stale click point when a late layout shift moves the selected control', async (): Promise<void> => {
 	// Arrange / Act
-	const observed = await observeNativeClick(true);
+	const observed = await observeNativeClick('measure-then-shift');
 
 	// Assert
 	expect(observed.error).toContain('Proof control does not receive pointer input');
@@ -76,11 +78,26 @@ it('rejects a stale click point when a late layout shift moves the selected cont
 
 it('dispatches real native input to a stable selected control', async (): Promise<void> => {
 	// Arrange / Act
-	const observed = await observeNativeClick(false);
+	const observed = await observeNativeClick('stable');
 
 	// Assert
 	expect(observed.error).toBeNull();
 	expect(observed.clicks).toEqual([
 		{ expectedControl: true, trusted: true, tag: 'button', id: 'continue', classes: [] },
+	]);
+});
+
+it('fails immediately when a trusted click lands elsewhere after the hit test', async (): Promise<void> => {
+	const observed = await observeNativeClick('hit-test-then-shift');
+
+	expect(observed.error).toContain('Trusted click missed the intended control');
+	expect(observed.clicks).toEqual([
+		{
+			expectedControl: false,
+			trusted: true,
+			tag: 'div',
+			id: 'late-overlay',
+			classes: ['late-render'],
+		},
 	]);
 });

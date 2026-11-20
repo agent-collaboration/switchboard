@@ -85,7 +85,11 @@ it('refuses duplicate first control observations across files when the second na
 			selection: selectSecurityTests(check),
 			runtimeErrors: 0,
 			process: { code: 1, signal: null, remaining: [] },
-			expected: { failure: 'expected 1 to be +0', count: 2, location: { file, line: 37 } },
+			expected: {
+				failure: 'expected 1 to be +0',
+				count: 2,
+				location: { file, line: 37, column: 4 },
+			},
 		}).kind,
 	).toBe('failed');
 });

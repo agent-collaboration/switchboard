@@ -128,6 +128,7 @@ export async function exerciseOrganizationChooser(
 		target: harness.target,
 		repositoryRoot: context.root,
 		cancelBrowser: () => page.cancel('Delivered CLI ended before chooser completion'),
+		signal: context.scenarioSignal,
 		browser: async (initialUrl: string): Promise<readonly string[]> => {
 			// Enter with the native session arranged above. Sign-in-page navigation is outside V2.
 			const ownerReady = new URL(initialUrl);

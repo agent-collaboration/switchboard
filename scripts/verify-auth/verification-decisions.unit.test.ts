@@ -133,7 +133,11 @@ it('requires the selected assertion red, exact restoration, and the same selecte
 		selection,
 		runtimeErrors: 0,
 		process: { ...process, code: 1 },
-		expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+		expected: {
+			failure: 'expected 200 to be 403',
+			count: 1,
+			location: { file, line: 17, column: 4 },
+		},
 	});
 	const green = decideTestRun({
 		checkoutRoot: '/checkout',
@@ -143,7 +147,7 @@ it('requires the selected assertion red, exact restoration, and the same selecte
 		process,
 	});
 	expect(red.kind).toBe('passed');
-	expect(red).toEqual({ kind: 'passed', assertion: `${file}:17` });
+	expect(red).toEqual({ kind: 'passed', assertion: `${file}:17:4` });
 	expect(
 		renderReport([
 			{
@@ -158,7 +162,7 @@ it('requires the selected assertion red, exact restoration, and the same selecte
 				cleanup: 'natural',
 			},
 		]),
-	).toContain(`PASS (expected red: ${file}:17)`);
+	).toContain(`PASS (expected red: ${file}:17:4)`);
 	expect(decideSecurityCheck({ red, green, restored: true }).kind).toBe('passed');
 	expect(decideSecurityCheck({ red, green, restored: false }).kind).toBe('failed');
 	for (const message of [
@@ -173,14 +177,22 @@ it('requires the selected assertion red, exact restoration, and the same selecte
 				selection,
 				runtimeErrors: 0,
 				process: { ...process, code: 1 },
-				expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+				expected: {
+					failure: 'expected 200 to be 403',
+					count: 1,
+					location: { file, line: 17, column: 4 },
+				},
 			}).kind,
 		).toBe('failed');
 });
 
 it('rejects a same-case assertion failure at the wrong line, even when the message matches', (): void => {
 	const parsed = testReportSchema.parse(report({ passed: 0, failed: 1 }));
-	const expected = { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } };
+	const expected = {
+		failure: 'expected 200 to be 403',
+		count: 1,
+		location: { file, line: 17, column: 4 },
+	};
 	expect(
 		decideTestRun({
 			checkoutRoot: '/checkout',
@@ -198,7 +210,7 @@ it('rejects a same-case assertion failure at the wrong line, even when the messa
 			selection,
 			runtimeErrors: 0,
 			process: { ...process, code: 1 },
-			expected: { ...expected, location: { file, line: 18 } },
+			expected: { ...expected, location: { file, line: 18, column: 4 } },
 		}).kind,
 	).toBe('failed');
 });
@@ -238,7 +250,11 @@ it('rejects ambiguous edits and checks the entire original source map on restore
 
 it('refuses intended assertion reds contaminated by unhandled or suite-level errors', (): void => {
 	const parsed = testReportSchema.parse(report({ passed: 0, failed: 1 }));
-	const expected = { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } };
+	const expected = {
+		failure: 'expected 200 to be 403',
+		count: 1,
+		location: { file, line: 17, column: 4 },
+	};
 	const ending = { ...process, code: 1 };
 	expect(
 		decideTestRun({
@@ -309,7 +325,11 @@ it.each([
 			selection,
 			runtimeErrors: 0,
 			process: { ...process, code: 1 },
-			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+			expected: {
+				failure: 'expected 200 to be 403',
+				count: 1,
+				location: { file, line: 17, column: 4 },
+			},
 		}).kind,
 	).toBe('failed');
 });
@@ -346,7 +366,11 @@ it.each([
 			selection,
 			runtimeErrors: 0,
 			process: { ...process, code: 1 },
-			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+			expected: {
+				failure: 'expected 200 to be 403',
+				count: 1,
+				location: { file, line: 17, column: 4 },
+			},
 		}).kind,
 	).toBe('passed');
 });
@@ -363,7 +387,11 @@ it('rejects an outside-checkout frame even with the correct path suffix', (): vo
 			selection,
 			runtimeErrors: 0,
 			process: { ...process, code: 1 },
-			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+			expected: {
+				failure: 'expected 200 to be 403',
+				count: 1,
+				location: { file, line: 17, column: 4 },
+			},
 		}).kind,
 	).toBe('failed');
 });
@@ -392,7 +420,11 @@ it('rejects expected text that appears only in a tab-separated stack function la
 			selection,
 			runtimeErrors: 0,
 			process: { ...process, code: 1 },
-			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+			expected: {
+				failure: 'expected 200 to be 403',
+				count: 1,
+				location: { file, line: 17, column: 4 },
+			},
 		}).kind,
 	).toBe('failed');
 });
@@ -409,7 +441,11 @@ it('accepts the expected assertion header with a tab-separated stack frame', ():
 			selection,
 			runtimeErrors: 0,
 			process: { ...process, code: 1 },
-			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+			expected: {
+				failure: 'expected 200 to be 403',
+				count: 1,
+				location: { file, line: 17, column: 4 },
+			},
 		}).kind,
 	).toBe('passed');
 });

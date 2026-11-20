@@ -47,8 +47,6 @@ export function resolveAssertionLocation(props: {
 	const matcher = matchers[0];
 	if (matchers.length !== 1 || matcher === undefined)
 		throw new Error('Assertion matcher is missing or ambiguous');
-	return {
-		file: props.file,
-		line: sourceFile.getLineAndCharacterOfPosition(matcher.name.getStart(sourceFile)).line + 1,
-	};
+	const address = sourceFile.getLineAndCharacterOfPosition(matcher.name.getStart(sourceFile));
+	return { file: props.file, line: address.line + 1, column: address.character + 1 };
 }

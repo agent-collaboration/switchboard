@@ -16,6 +16,7 @@ import {
 	controlledSignInClock,
 	controlledSignInIds,
 } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
+import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
 import type { OrganizationBrowserScenario } from '#sign-in-test-support/test-fixtures/organization-browser-scenario';
 import {
 	installOrganizationBrowserCookie,
@@ -27,7 +28,60 @@ import {
 	signInConfirmedPeopleBrowser,
 	signInPeopleBrowser,
 } from '#sign-in-test-support/test-fixtures/people-browser-login';
+import type { PlaywrightBrowserPage } from '#sign-in-test-support/test-fixtures/playwright-browser';
 import { nativeNetworkResponseSchema } from '#sign-in-test-support/test-fixtures/playwright-network';
+
+async function observePeoplePublications(
+	page: PlaywrightBrowserPage,
+	regionSelector: string,
+	operation: 'lookup' | 'list',
+	staleText: string,
+): Promise<void> {
+	await page.evaluate(
+		`(()=>{
+const region=document.querySelector(${JSON.stringify(regionSelector)});
+if(!region)throw new Error('People publication region missing');
+const publications=[];
+let resolveStale;
+const stale=new Promise(resolve=>{resolveStale=resolve;});
+const capture=()=>{
+ const publication=region.textContent??'';
+ publications.push(publication);
+ if(publication.includes(${JSON.stringify(staleText)}))resolveStale(true);
+};
+const dom=new MutationObserver(capture);
+dom.observe(region,{childList:true,subtree:true,characterData:true});
+capture();
+let resolveHandled;
+const handled=new Promise(resolve=>{resolveHandled=resolve;});
+const outcome=new PerformanceObserver((entries)=>{
+if(entries.getEntriesByName(${JSON.stringify('organization-people:' + operation + '-handled')}).length===0)return;
+outcome.disconnect();resolveHandled(true);
+});
+outcome.observe({entryTypes:['mark']});
+window.peoplePublicationProbe={publications,handled,stale,close:()=>{dom.disconnect();outcome.disconnect();resolveStale(false);}};
+return true;
+})()`,
+		z.literal(true),
+	);
+}
+
+async function requireFreshPeoplePublication(
+	page: PlaywrightBrowserPage,
+	publishNewer: () => Promise<void>,
+): Promise<void> {
+	const stalePublication = page
+		.evaluate('window.peoplePublicationProbe.stale', z.boolean())
+		.then((published): void => {
+			if (published) throw new Error('Stale People reply was published');
+		});
+	await Promise.race([publishNewer(), stalePublication]);
+}
+
+async function closePeoplePublications(page: PlaywrightBrowserPage): Promise<void> {
+	if (page.page.isClosed()) return;
+	await page.evaluate('window.peoplePublicationProbe.close(); true', z.literal(true));
+}
 
 const lookupPath = '/api/auth/organization/person-membership';
 const listPath = '/api/auth/organization/people-list';
@@ -252,34 +306,32 @@ export async function exerciseOrganizationPeople(
 	expect(context.requestedPaths.filter((pathname) => pathname === lookupPath)).toHaveLength(
 		beforeDuplicate + 1,
 	);
-	await page.evaluate(
-		`(()=>{window.organizationLookupPublications=[];const capture=()=>window.organizationLookupPublications.push(document.querySelector(${JSON.stringify(resultRegion)})?.textContent??'');window.organizationLookupObserver=new MutationObserver(capture);window.organizationLookupObserver.observe(document.querySelector(${JSON.stringify(resultRegion)}),{childList:true,subtree:true,characterData:true});capture();return true;})()`,
-		z.literal(true),
+	await observePeoplePublications(page, resultRegion, 'lookup', 'Invited');
+	await withNativeBrowserCleanup(
+		async (): Promise<void> => {
+			// The newer reply stays held until the component has processed the older reply.
+			await responses.release(firstHeld);
+			await page.evaluate('window.peoplePublicationProbe.handled', z.literal(true));
+			const whileNewerLookupPending = await page.evaluate(
+				`({current:document.querySelector(${JSON.stringify(resultRegion)})?.textContent,publications:window.peoplePublicationProbe.publications})`,
+				z.object({ current: z.string(), publications: z.array(z.string()) }),
+			);
+			expect(whileNewerLookupPending.current).toBe('Looking up…');
+			expect(whileNewerLookupPending.publications).not.toContain('Invited');
+			await responses.release(newerLookupHeld);
+			await requireFreshPeoplePublication(page, () => expectLookup(context, 'Not a member'));
+			expect(
+				await page.evaluate(
+					`document.querySelector(${JSON.stringify(resultRegion)})?.textContent`,
+					z.string(),
+				),
+			).toBe('Not a member');
+			expect(
+				await page.evaluate('window.peoplePublicationProbe.publications', z.array(z.string())),
+			).not.toContain('Invited');
+		},
+		() => closePeoplePublications(page),
 	);
-	try {
-		// A is delivered while B's computed response remains held at Chrome's response boundary.
-		await responses.release(firstHeld);
-		await page.readyWhen('true');
-		const whileNewerLookupPending = await page.evaluate(
-			`({current:document.querySelector(${JSON.stringify(resultRegion)})?.textContent,publications:window.organizationLookupPublications})`,
-			z.object({ current: z.string(), publications: z.array(z.string()) }),
-		);
-		expect(whileNewerLookupPending.current).toBe('Looking up…');
-		expect(whileNewerLookupPending.publications).not.toContain('Invited');
-	} finally {
-		await page.evaluate('window.organizationLookupObserver.disconnect(); true', z.literal(true));
-		await responses.release(newerLookupHeld);
-	}
-	await expectLookup(context, 'Not a member');
-	await page.readyWhen(
-		`document.querySelector(${JSON.stringify(resultRegion)})?.textContent==='Not a member'`,
-	);
-	expect(
-		await page.evaluate(
-			`document.querySelector(${JSON.stringify(resultRegion)})?.textContent`,
-			z.string(),
-		),
-	).toBe('Not a member');
 	const editReply = responses.arm((url): boolean => url.pathname === lookupPath);
 	await lookUp(context, 'browser-invited@example.invalid');
 	const editHeld = await editReply;
@@ -349,41 +401,43 @@ export async function exerciseOrganizationPeople(
 	});
 	const olderPageEmail = expected[50]?.email;
 	if (olderPageEmail === undefined) throw new Error('Page-50 fixture absent');
-	await page.evaluate(
-		`(()=>{window.organizationListPublications=[];const table=document.querySelector('table[aria-label="Members"]');const capture=()=>window.organizationListPublications.push(table.textContent);window.organizationListObserver=new MutationObserver(capture);window.organizationListObserver.observe(table,{childList:true,subtree:true,characterData:true});capture();return true;})()`,
-		z.literal(true),
+	await observePeoplePublications(page, 'table[aria-label="Members"]', 'list', olderPageEmail);
+	await withNativeBrowserCleanup(
+		async (): Promise<void> => {
+			await responses.release(page50Held);
+			await page.evaluate('window.peoplePublicationProbe.handled', z.literal(true));
+			const whilePage100Pending = await page.evaluate(
+				`({loading:!!document.querySelector('table[aria-label="Members"] [aria-label="Loading people"]'),emails:Array.from(document.querySelectorAll('table[aria-label="Members"] tbody button')).map(button=>button.textContent.trim()),publications:window.peoplePublicationProbe.publications})`,
+				z.object({
+					loading: z.boolean(),
+					emails: z.array(z.string()),
+					publications: z.array(z.string()),
+				}),
+			);
+			expect(whilePage100Pending.loading).toBe(true);
+			expect(whilePage100Pending.emails).toEqual([]);
+			expect(whilePage100Pending.publications.join('\n')).not.toContain(olderPageEmail);
+			await responses.release(page100Held);
+			const page100 = nativeNetworkResponseSchema.parse(await page100Response.completed);
+			expect(page100.requestId).toBe(page100Held.networkId);
+			expect(new URL(page100.response.url).searchParams.get('offset')).toBe('100');
+			await requireFreshPeoplePublication(page, () =>
+				organizationDomReady(
+					page,
+					`document.querySelectorAll('table[aria-label="Members"] tbody tr').length===1`,
+				),
+			);
+			expect(await memberEmails(context)).toEqual(
+				expected.slice(100).map((person) => person.email),
+			);
+			const publications = await page.evaluate(
+				'window.peoplePublicationProbe.publications',
+				z.array(z.string()),
+			);
+			expect(publications.join('\n')).not.toContain(olderPageEmail);
+		},
+		() => closePeoplePublications(page),
 	);
-	try {
-		// Page 50 is delivered while page 100's computed response is still held.
-		await responses.release(page50Held);
-		await page.readyWhen('true');
-		const whilePage100Pending = await page.evaluate(
-			`({loading:!!document.querySelector('table[aria-label="Members"] [aria-label="Loading people"]'),emails:Array.from(document.querySelectorAll('table[aria-label="Members"] tbody button')).map(button=>button.textContent.trim()),publications:window.organizationListPublications})`,
-			z.object({
-				loading: z.boolean(),
-				emails: z.array(z.string()),
-				publications: z.array(z.string()),
-			}),
-		);
-		expect(whilePage100Pending.loading).toBe(true);
-		expect(whilePage100Pending.emails).toEqual([]);
-		expect(whilePage100Pending.publications.join('\n')).not.toContain(olderPageEmail);
-	} finally {
-		await page.evaluate('window.organizationListObserver.disconnect(); true', z.literal(true));
-		await responses.release(page100Held);
-	}
-	const page100 = nativeNetworkResponseSchema.parse(await page100Response.completed);
-	expect(page100.requestId).toBe(page100Held.networkId);
-	expect(new URL(page100.response.url).searchParams.get('offset')).toBe('100');
-	await organizationDomReady(
-		page,
-		`document.querySelectorAll('table[aria-label="Members"] tbody tr').length===1`,
-	);
-	expect(await memberEmails(context)).toEqual(expected.slice(100).map((person) => person.email));
-	await page.readyWhen(
-		`document.querySelectorAll('table[aria-label="Members"] tbody tr').length===1`,
-	);
-	expect(await memberEmails(context)).toEqual(expected.slice(100).map((person) => person.email));
 	const layout = await page.evaluate(
 		`({headingCount:document.querySelectorAll('h1').length,overflow:document.documentElement.scrollWidth>innerWidth,dark:document.documentElement.classList.contains('dark')&&matchMedia('(prefers-color-scheme: dark)').matches,roleControls:document.querySelectorAll('select,[role="combobox"]').length,mutations:Array.from(document.querySelectorAll('button,input,select,a')).map(node=>({label:node.getAttribute('aria-label')||node.textContent||'',tag:node.tagName})).filter(item=>/^(Invite|Remove|Change role|Edit role)/i.test(item.label.trim()))})`,
 		z.object({

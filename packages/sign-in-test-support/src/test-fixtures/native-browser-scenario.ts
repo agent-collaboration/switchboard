@@ -118,6 +118,8 @@ export async function observeNativeFactorBrowser(
 			authenticatorClock: { now: () => epochMillisecondsSchema.parse(appMilliseconds) },
 		});
 		const activeHarness = harness;
+		if (activeHarness.signInHost !== host)
+			throw new Error(`Requested ${host} browser scenario resolved ${activeHarness.signInHost}`);
 		chrome = await launchProofBrowser({
 			evidence,
 			origin: activeHarness.issuer,

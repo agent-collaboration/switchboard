@@ -35,6 +35,7 @@ import {
 export interface OrganizationBrowserScenario {
 	readonly harness: Awaited<ReturnType<typeof startLocalAuthHarness>>;
 	readonly page: PlaywrightBrowserPage;
+	readonly scenarioSignal: AbortSignal;
 	readonly responses: OrganizationBrowserResponses;
 	readonly root: string;
 	readonly firstOrganizationId: string;
@@ -72,6 +73,8 @@ export async function observeOrganizationBrowser(
 	let status: 'passed' | 'failed' = 'failed';
 	let scenarioFailure: OrganizationBrowserFailure = { kind: 'none' };
 	try {
+		if (harness.signInHost !== host)
+			throw new Error(`Requested ${host} browser scenario resolved ${harness.signInHost}`);
 		const initial = organizationPersonTokenClaimsSchema.parse(
 			decodeJwt(await harness.ownerToken()),
 		);
@@ -132,6 +135,7 @@ export async function observeOrganizationBrowser(
 		const context: OrganizationBrowserScenario = {
 			harness,
 			page,
+			scenarioSignal,
 			responses,
 			root,
 			firstOrganizationId: first.id,

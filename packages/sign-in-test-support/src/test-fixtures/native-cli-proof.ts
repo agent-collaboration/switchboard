@@ -89,13 +89,19 @@ export async function runCachedNativeOwnerCommand(props: {
 	}
 }
 
-/** Exercises the delivered entry, argument parsing, PKCE loopback and private cache, not only its login helper. */
+type NativeOwnerCliLifecycle =
+	| { readonly kind: 'waitingForUrl' }
+	| { readonly kind: 'browserRunning' }
+	| { readonly kind: 'completed' };
+
+/** Exercises the built entry, argument parsing, PKCE loopback and private cache. */
 export async function loginThroughNativeOwnerCli(props: {
 	readonly target: AuthTarget;
 	readonly repositoryRoot: string;
 	readonly browser: (url: string) => Promise<readonly string[]>;
 	readonly profile?: NativeOwnerCliProfile;
 	readonly cancelBrowser?: () => Promise<void>;
+	readonly signal?: AbortSignal;
 }): Promise<string> {
 	const targetFile = path.join(path.dirname(props.target.tokenCachePath), 'owner-cli-target.json');
 	await writeFile(targetFile, JSON.stringify(props.target), { mode: 0o600 });
@@ -111,6 +117,8 @@ export async function loginThroughNativeOwnerCli(props: {
 			mode: 0o600,
 			flag: 'wx',
 		});
+	props.signal?.throwIfAborted();
+	const allowCache = props.profile?.authorization === 'allow-cache';
 	const child = spawn(
 		process.execPath,
 		[
@@ -120,7 +128,7 @@ export async function loginThroughNativeOwnerCli(props: {
 			'--target',
 			targetFile,
 			'--no-browser',
-			...(props.profile?.authorization === 'allow-cache' ? [] : ['--force-auth']),
+			...(allowCache ? [] : ['--force-auth']),
 			'login',
 		],
 		{
@@ -135,8 +143,19 @@ export async function loginThroughNativeOwnerCli(props: {
 	const sensitiveValues: string[] = [];
 	const browserCompletion = Promise.withResolvers<void>();
 	void browserCompletion.promise.catch(() => undefined);
-	let browserStarted = false;
-	let browserSettled = false;
+	let lifecycle: NativeOwnerCliLifecycle = { kind: 'waitingForUrl' };
+	const interrupted = Promise.withResolvers<never>();
+	void interrupted.promise.catch(() => undefined);
+	function terminatePendingChild(): void {
+		if (child.exitCode === null && child.signalCode === null && !child.killed)
+			child.kill('SIGTERM');
+	}
+	const onAbort = (): void => {
+		interrupted.reject(props.signal?.reason);
+		terminatePendingChild();
+	};
+	if (props.signal?.aborted === true) onAbort();
+	else props.signal?.addEventListener('abort', onAbort, { once: true });
 	const childClosed = Promise.withResolvers<void>();
 	const safeLines = new Set([
 		...ownerLoginFailureLines,
@@ -164,21 +183,29 @@ export async function loginThroughNativeOwnerCli(props: {
 		for await (const line of createInterface({ input: child.stdout })) {
 			output.push(line);
 			if (!line.startsWith('AUTHORIZATION_URL=')) continue;
-			if (browserStarted) throw new Error('Native owner CLI printed multiple authorization URLs');
-			browserStarted = true;
+			if (props.signal?.aborted === true) continue;
+			if (lifecycle.kind !== 'waitingForUrl')
+				throw new Error('Native owner CLI printed multiple authorization URLs');
+			lifecycle = { kind: 'browserRunning' };
 			void props.browser(line.slice('AUTHORIZATION_URL='.length)).then(
 				(values) => {
 					sensitiveValues.push(...values);
-					browserSettled = true;
+					lifecycle = { kind: 'completed' };
 					browserCompletion.resolve();
 				},
 				(error: unknown): void => {
-					browserSettled = true;
+					lifecycle = { kind: 'completed' };
 					browserCompletion.reject(error);
 				},
 			);
 		}
-		if (!browserStarted) browserCompletion.resolve();
+		if (lifecycle.kind === 'waitingForUrl') {
+			await ending;
+			if (!allowCache)
+				throw new Error('Forced native CLI login did not print an authorization URL');
+			lifecycle = { kind: 'completed' };
+			browserCompletion.resolve();
+		}
 	})();
 	const stderr = (async (): Promise<void> => {
 		for await (const line of createInterface({ input: child.stderr })) {
@@ -187,7 +214,10 @@ export async function loginThroughNativeOwnerCli(props: {
 	})();
 	return withNativeBrowserCleanup(
 		async () => {
-			await Promise.all([ending, stdout, stderr, browserCompletion.promise]);
+			await Promise.race([
+				Promise.all([ending, stdout, stderr, browserCompletion.promise]),
+				interrupted.promise,
+			]);
 			const cached = cachedOwnerTokenSchema.parse(
 				JSON.parse(await readFile(props.target.tokenCachePath, 'utf8')),
 			);
@@ -200,15 +230,16 @@ export async function loginThroughNativeOwnerCli(props: {
 			return cached.token;
 		},
 		async (): Promise<void> => {
+			props.signal?.removeEventListener('abort', onAbort);
+			terminatePendingChild();
 			await withNativeBrowserCleanup(
 				async (): Promise<void> => {
-					if (browserStarted && !browserSettled && props.cancelBrowser !== undefined) {
+					if (lifecycle.kind === 'browserRunning' && props.cancelBrowser !== undefined) {
 						await props.cancelBrowser();
 						await browserCompletion.promise.catch(() => undefined);
 					}
 				},
 				async (): Promise<void> => {
-					if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
 					await childClosed.promise;
 					await Promise.allSettled([stdout, stderr]);
 				},

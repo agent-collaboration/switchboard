@@ -105,6 +105,14 @@ function LoadingRows(): React.ReactElement {
 	);
 }
 
+/** Records when the component has handled a reply, including a discarded generation. */
+function recordHandledPeopleReply(kind: 'lookup' | 'list'): void {
+	if (typeof performance.mark !== 'function') return;
+	const name = `organization-people:${kind}-handled`;
+	performance.clearMarks(name);
+	performance.mark(name);
+}
+
 /** Read-only table structure follows Better Auth UI's people tables at 2b028ec5;
  * independently composed with Switchboard's shared shadcn components. */
 function OrganizationPeopleContent(props: {
@@ -163,6 +171,8 @@ function OrganizationPeopleContent(props: {
 				});
 			} catch {
 				applyList({ kind: 'failed', generation: pending.generation });
+			} finally {
+				recordHandledPeopleReply('list');
 			}
 		},
 		[props.transport, applyList],
@@ -187,6 +197,8 @@ function OrganizationPeopleContent(props: {
 			applyLookup({ kind: 'reply', generation: pending.generation, reply });
 		} catch {
 			applyLookup({ kind: 'failed', generation: pending.generation });
+		} finally {
+			recordHandledPeopleReply('lookup');
 		}
 	}
 	function submitLookup(nextEmail: string): void {

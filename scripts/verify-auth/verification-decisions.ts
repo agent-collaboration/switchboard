@@ -81,7 +81,7 @@ export function assertionLocation(
 			const frame = /^(?:[^()]*?\s+\()?([^()]+\.(?:ts|tsx)):(\d+):(\d+)\)?\s*$/u.exec(
 				line.slice(start[0].length),
 			);
-			if (frame?.[1] === undefined || frame[2] === undefined) continue;
+			if (frame?.[1] === undefined || frame[2] === undefined || frame[3] === undefined) continue;
 			try {
 				const file = frame[1].startsWith('file:') ? fileURLToPath(frame[1]) : frame[1];
 				const relative = path.relative(checkoutRoot, path.resolve(checkoutRoot, file));
@@ -92,7 +92,7 @@ export function assertionLocation(
 					path.isAbsolute(relative)
 				)
 					return null;
-				return `${relative.split(path.sep).join('/')}:${frame[2]}`;
+				return `${relative.split(path.sep).join('/')}:${frame[2]}:${frame[3]}`;
 			} catch {
 				return null;
 			}
@@ -104,7 +104,7 @@ export function assertionLocation(
 export interface ExpectedFailure {
 	readonly failure: string;
 	readonly count: number;
-	readonly location: { readonly file: string; readonly line: number };
+	readonly location: { readonly file: string; readonly line: number; readonly column: number };
 }
 
 export function decideTestRun(props: {
@@ -178,7 +178,7 @@ export function decideTestRun(props: {
 		)
 			return failed('security check did not produce exactly its intended failures');
 		const expected = props.expected;
-		const expectedLocation = `${expected.location.file}:${expected.location.line}`;
+		const expectedLocation = `${expected.location.file}:${expected.location.line}:${expected.location.column}`;
 		if (
 			failures.some((test) => {
 				const message = test.messages.length === 1 ? test.messages[0] : undefined;
