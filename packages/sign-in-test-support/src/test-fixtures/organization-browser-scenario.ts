@@ -182,9 +182,7 @@ export async function observeOrganizationBrowser(
 							host,
 							kind,
 							status,
-							browserConnectedAfterClose: chrome?.isBrowserConnected() ?? null,
-							actualHarnessHost: harness?.signInHost ?? null,
-							harnessTeardown: harness?.teardownObservations.map((entry) => entry.kind) ?? [],
+							actualHarnessHost: harness.signInHost,
 							screenshots,
 							requestedPaths,
 							standIns: [
@@ -202,8 +200,8 @@ export async function observeOrganizationBrowser(
 					{ mode: 0o600 },
 				);
 			},
-			close: () =>
-				withNativeBrowserCleanup(
+			close: async (): Promise<void> => {
+				await withNativeBrowserCleanup(
 					async (): Promise<void> => {
 						await responses?.close();
 					},
@@ -214,7 +212,18 @@ export async function observeOrganizationBrowser(
 							},
 							() => harness.close(),
 						),
-				),
+				);
+				const cleanup = {
+					sourceRevision,
+					host: harness.signInHost,
+					kind,
+					browserConnectedAfterClose: chrome?.isBrowserConnected() ?? null,
+					harnessTeardown: harness.teardownObservations.map((entry) => entry.kind),
+				};
+				await writeFile(path.join(evidence, 'cleanup.json'), JSON.stringify(cleanup), {
+					mode: 0o600,
+				});
+			},
 		});
 	}
 }
