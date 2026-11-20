@@ -8,12 +8,15 @@ import { z } from 'zod';
 import { useControlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-node-test-clock';
 import { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import { startHeadlessChrome } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import { registerNativeBrowserTestCleanup } from '#sign-in-test-support/test-fixtures/native-browser-test-cleanup';
 import { observeOrganizationBrowser } from '#sign-in-test-support/test-fixtures/organization-browser-scenario';
 import {
 	observeOrganizationEnterGesture,
 	pressOrganizationBrowserKey,
 	tabToOrganizationControl,
 } from '#sign-in-test-support/test-fixtures/organization-browser-transport';
+
+registerNativeBrowserTestCleanup();
 
 useControlledSignInClock();
 

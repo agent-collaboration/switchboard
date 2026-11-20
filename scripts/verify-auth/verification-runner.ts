@@ -1,4 +1,15 @@
-import { readFile, writeFile, mkdtemp, mkdir, rm, access } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import {
+	readFile,
+	writeFile,
+	mkdtemp,
+	mkdir,
+	rm,
+	access,
+	realpath,
+	lstat,
+	open,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +24,7 @@ import {
 } from '../../verification/security-checks';
 import { resolveAssertionLocation } from './verification-assertion-anchor';
 import {
+	reportPassed,
 	testReportSchema,
 	observedAssertions,
 	decideTestRun,
@@ -113,7 +125,7 @@ async function checkout(context: Context, label: string): Promise<string> {
 	const commit = await text(context, root, 'git', ['rev-parse', 'HEAD'], 'actual-commit');
 	if (commit !== context.options.commit) throw new Error('Wrong target commit');
 	await text(context, root, 'pnpm', ['install', '--frozen-lockfile'], 'install');
-	return root;
+	return realpath(root);
 }
 async function requireCommit(context: Context, root: string, minimum: string): Promise<void> {
 	await text(
@@ -127,6 +139,15 @@ async function requireCommit(context: Context, root: string, minimum: string): P
 function exactPattern(names: readonly string[]): string {
 	return names.map((name) => `^${name.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`).join('|');
 }
+export function selectSecurityTests(check: SecurityCheck): TestSelection {
+	return {
+		files: check.testFiles,
+		pattern: exactPattern(check.testNames),
+		minimumPassed: check.testNames.length,
+		requiredNames: check.testNames,
+	};
+}
+
 interface TestObservation {
 	readonly row: DecidingFacts;
 	readonly process: CommandResult;
@@ -185,16 +206,17 @@ async function test(
 	const left = result.remaining;
 	if (left === null) context.cleanupUnknown = true;
 	let verdict = decideTestRun({
+		checkoutRoot: props.root,
 		report,
 		selection: props.selection,
 		process: { ...result, remaining: left },
 		runtimeErrors,
 		...(props.expected === undefined ? {} : { expected: props.expected }),
 	});
-	if (result.leftAtExit !== null && result.leftAtExit.length > 0 && verdict.kind === 'passed')
+	if (result.cleanup.kind !== 'natural' && verdict.kind === 'passed')
 		verdict = {
 			kind: 'failed',
-			reason: 'owned descendants required cleanup after parent exit',
+			reason: 'owned descendants required SIGTERM after bounded natural reaping',
 			assertion: null,
 		};
 	return {
@@ -215,6 +237,7 @@ async function test(
 			restored: null,
 			remaining: left,
 			leftAtExit: result.leftAtExit,
+			cleanup: result.cleanup.kind,
 		},
 	};
 }
@@ -233,30 +256,85 @@ async function sourceMap(
 	// A fresh target starts clean. Exact empty diff and no untracked source decide whole-source restore.
 	return { diff, untracked };
 }
+export interface OriginalSource {
+	readonly resolvedPath: string;
+	readonly bytes: Buffer;
+}
+async function resolvedSourceFile(root: string, relative: string): Promise<string> {
+	const canonicalRoot = await realpath(root);
+	const destination = safeFile(canonicalRoot, relative);
+	const inside = path.relative(canonicalRoot, destination);
+	if (
+		inside.length === 0 ||
+		inside === '..' ||
+		inside.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(inside)
+	)
+		throw new Error('Source destination must stay inside the checkout');
+	let walked = canonicalRoot;
+	for (const component of inside.split(path.sep)) {
+		walked = path.join(walked, component);
+		if ((await lstat(walked)).isSymbolicLink())
+			throw new Error('Source destination must not contain symlinks');
+	}
+	const resolved = await realpath(destination);
+	if (resolved !== destination || !(await lstat(resolved)).isFile())
+		throw new Error('Source destination must be a regular checkout file');
+	return resolved;
+}
 export async function applySecurityEdits(
 	root: string,
 	edits: readonly SecurityEdit[],
-	originals: Map<string, string>,
+	originals: Map<string, OriginalSource>,
 ): Promise<void> {
 	for (const edit of edits) {
-		const file = safeFile(root, edit.file);
-		const contents = await readFile(file, 'utf8');
-		// Custody is acquired before the write, including a partially applied multi-file mutation.
-		if (!originals.has(edit.file)) originals.set(edit.file, contents);
-		await writeFile(file, replaceExact(contents, edit.find, edit.replace));
+		const resolvedPath = await resolvedSourceFile(root, edit.file);
+		const handle = await open(resolvedPath, constants.O_RDWR | constants.O_NOFOLLOW);
+		try {
+			const bytes = await handle.readFile();
+			const prior = originals.get(edit.file);
+			if (prior !== undefined && prior.resolvedPath !== resolvedPath)
+				throw new Error('Source destination changed');
+			// Acquire exact byte custody before any write, including partial multi-file mutations.
+			if (prior === undefined) originals.set(edit.file, { resolvedPath, bytes });
+			const mutation = Buffer.from(replaceExact(bytes.toString('utf8'), edit.find, edit.replace));
+			if ((await handle.write(mutation, 0, mutation.length, 0)).bytesWritten !== mutation.length)
+				throw new Error('Incomplete mutation write');
+			await handle.truncate(mutation.length);
+		} finally {
+			await handle.close();
+		}
 	}
 }
 
 export async function restoreSecurityEdits(
 	root: string,
-	originals: ReadonlyMap<string, string>,
+	originals: ReadonlyMap<string, OriginalSource>,
 ): Promise<void> {
 	const attempts = await Promise.allSettled(
-		[...originals].map(([relative, contents]) => writeFile(safeFile(root, relative), contents)),
+		[...originals].map(async ([relative, original]): Promise<void> => {
+			const destination = await resolvedSourceFile(root, relative);
+			if (destination !== original.resolvedPath)
+				throw new Error('Original source destination changed');
+			const handle = await open(destination, constants.O_RDWR | constants.O_NOFOLLOW);
+			try {
+				if (
+					(await handle.write(original.bytes, 0, original.bytes.length, 0)).bytesWritten !==
+					original.bytes.length
+				)
+					throw new Error('Incomplete restoration write');
+				await handle.truncate(original.bytes.length);
+			} finally {
+				await handle.close();
+			}
+			if (!(await readFile(await resolvedSourceFile(root, relative))).equals(original.bytes))
+				throw new Error('Restored source bytes disagree');
+		}),
 	);
 	if (attempts.some((attempt) => attempt.status === 'rejected'))
 		throw new Error('Original source bytes could not all be restored');
 }
+
 function problemRow(
 	context: Context,
 	id: string,
@@ -272,6 +350,7 @@ function problemRow(
 		restored: null,
 		remaining: null,
 		leftAtExit: null,
+		cleanup: 'unknown',
 	};
 }
 async function security(context: Context, check: SecurityCheck): Promise<readonly DecidingFacts[]> {
@@ -282,16 +361,12 @@ async function security(context: Context, check: SecurityCheck): Promise<readonl
 	if (site === undefined) throw new Error('Security check has no adopted assertion site');
 	const testSource = await readFile(safeFile(root, site.file), 'utf8');
 	const location = resolveAssertionLocation({ ...site, source: testSource });
-	const selection: TestSelection = {
-		files: check.testFiles,
-		pattern: exactPattern(check.testNames),
-		minimumPassed: check.testNames.length,
-	};
-	const originals = new Map<string, string>();
+	const selection = selectSecurityTests(check);
+	const originals = new Map<string, OriginalSource>();
 	const rows: DecidingFacts[] = [];
 	let phase: SecurityPhase = {
 		kind: 'prepared',
-		expectedAssertion: `${path.basename(location.file)}:${location.line}`,
+		expectedAssertion: `${location.file}:${location.line}`,
 	};
 	while (true) {
 		const effect = securityPhaseEffect(phase);
@@ -449,7 +524,13 @@ export async function runVerification(options: VerificationOptions): Promise<Ver
 	await writeFile(path.join(evidence, 'report.json'), JSON.stringify(result, null, 2) + '\n', {
 		mode: 0o600,
 	});
-	if (problems.length === 0 && rows.every((row) => row.verdict.kind === 'passed'))
-		await rm(logs, { recursive: true });
+	await cleanupSuccessfulEvidence(result);
 	return result;
+}
+
+export async function cleanupSuccessfulEvidence(report: VerificationReport): Promise<void> {
+	if (report.problems.length === 0 && reportPassed(report.rows)) {
+		await rm(path.join(report.evidence, 'logs'), { recursive: true });
+		await rm(path.join(report.evidence, 't'), { recursive: true });
+	}
 }

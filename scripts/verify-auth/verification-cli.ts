@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { securityChecks } from '../../verification/security-checks';
 import { signInVerificationBaseline } from '../../verification/target-baseline';
 import { reportPassed, renderReport } from './verification-decisions';
-import { flowIds, type FlowId } from './verification-flows';
+import { flows, flowIds, type FlowId } from './verification-flows';
 import { commandText } from './verification-process';
 import { runVerification } from './verification-runner';
 
@@ -64,11 +64,18 @@ export async function verificationMain(journey: Journey, argv: readonly string[]
 			help: { type: 'boolean' },
 		},
 	});
+	const outcome =
+		journey === 'security-checks'
+			? 'Each selected control fails only at its single named assertion, restores exact source bytes, and then passes on both hosts with no owned processes left.'
+			: journey === 'all'
+				? `${flows.map((flow) => flow.behavior).join(' ')} All selected security controls require their intended red and restored green.`
+				: flows.find((flow) => flow.id === journey)?.behavior;
 	const help = `Verify Switchboard sign-in: ${journey}.
+Success: ${outcome}
 Usage: pnpm exec tsx scripts/verify-auth/${journey === 'all' ? 'verify-auth' : journey}.ts --commit <commit> [--flows <comma-separated>] [--checks <comma-separated>]
 
 Makes a fresh temporary checkout, installs the frozen lockfile, builds, and runs the selected permanent tests on cloudflare and node.
-Passkey and organizations include real Chrome journeys; HTTP and pure assertions remain labelled as such.
+Passkey, organizations and CLI include delivered real Chrome journeys; agents use CLI/HTTP/Gateway; HTTP and pure assertions remain labelled as such.
 Security checks apply exact qualified edits, require the named assertion red, restore the entire source, rebuild and require green on both hosts.
 Prints commit, actual test names/counts, result/assertion, exact restore and owned processes left running. JSON report survives cleanup. Raw logs are kept privately only on failure.
 Never uses Keychain, never edits the invoking checkout, never pushes, and introduces no timers or sleeps.

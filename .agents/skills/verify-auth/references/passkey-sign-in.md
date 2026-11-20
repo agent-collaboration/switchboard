@@ -1,5 +1,7 @@
 # Passkey sign-in
 
+The adopted design IDs below refer to owner-held design documents that are not shipped in this repository. The expected behavior stated here is the authoritative public statement for this recipe. Public package contracts are linked where available.
+
 Expected result: B1-B Specification S1–S12 / Verification V1–V9, especially S5 membership before session creation, S8 per-layer limits, S9 no unconfirmed release and S12 audit. Only a registered, user-verified passkey for an active person may create a session; a refused or unconfirmed attempt releases no cookie or credential. Admitted attempts retain their required audit outcome. The [public core contract](../../../../packages/sign-in-core/README.md) also documents click-only passkey sign-in, copied factor facts and separate rate-limit layers.
 
 A person loads the public sign-in page without creating a challenge, clicks Continue with Passkey, completes user verification and returns signed in. A no-UV, unknown-credential, removed-member or post-INSERT fault leaves them signed out; admitted attempts record the required outcome. Rate-limited requests create nothing.

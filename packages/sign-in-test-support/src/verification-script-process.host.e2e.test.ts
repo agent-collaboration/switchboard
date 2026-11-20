@@ -2,7 +2,7 @@ import { mkdtemp, readFile, open, writeFile, type FileHandle } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 
 import { runCommand } from '../../../scripts/verify-auth/verification-process';
 
@@ -49,6 +49,8 @@ it('observes and stops an owned descendant after its parent exits while inherite
 	if (result.leftAtExit === null) throw new Error('Process observation unexpectedly unavailable');
 	expect(result.leftAtExit.length).toBeGreaterThan(0);
 	expect(result.remaining).toEqual([]);
+	expect(result.cleanup.kind).toBe('intervened');
+	expect(result.cleanup.termination).toEqual({ kind: 'sent', signal: 'SIGTERM' });
 	expect(await readFile(result.stdoutFile, 'utf8')).toBe('descendant-ready');
 });
 
@@ -60,10 +62,54 @@ it('keeps cleanup unknown when observation fails instead of asserting no leftove
 		cwd: directory,
 		env: process.env,
 		logPrefix: path.join(directory, 'observer-failure'),
-		observeGroup: async (): Promise<readonly number[]> => {
+		observeGroup: async (): Promise<
+			readonly import('./test-fixtures/owned-process-group').OwnedProcessIdentity[]
+		> => {
 			throw new Error('Injected observation failure');
 		},
 	});
 	expect(result.remaining).toBeNull();
 	expect(result.leftAtExit).toBeNull();
 });
+
+it.each(['late', 'persistent', 'zombie'] as const)(
+	'distinguishes %s descendants without forceful signals',
+	async (kind): Promise<void> => {
+		const directory = await mkdtemp(path.join(tmpdir(), 'verify-group-policy-'));
+		const signals: (string | number | undefined)[] = [];
+		const signal = vi.spyOn(process, 'kill').mockImplementation((_pid, value): true => {
+			signals.push(value);
+			return true;
+		});
+		let reads = 0;
+		try {
+			const result = await runCommand({
+				executable: process.execPath,
+				args: ['-e', 'process.exit(0)'],
+				cwd: directory,
+				env: process.env,
+				logPrefix: path.join(directory, 'policy'),
+				observeGroup: async (group) => {
+					reads += 1;
+					return kind === 'late' && reads >= 3
+						? []
+						: [
+								{
+									pid: 123,
+									parent: 122,
+									group,
+									command: 'synthetic-child',
+									state: kind === 'zombie' ? 'Z' : 'S',
+								},
+							];
+				},
+			});
+			expect(signals).toEqual(kind === 'persistent' ? ['SIGTERM'] : []);
+			expect(result.cleanup.kind).toBe(kind === 'persistent' ? 'intervened' : 'natural');
+			expect(result.remaining).toEqual(kind === 'persistent' ? [123] : []);
+			expect(result.cleanup.reads.length).toBe(kind === 'late' ? 3 : kind === 'zombie' ? 1 : 10);
+		} finally {
+			signal.mockRestore();
+		}
+	},
+);

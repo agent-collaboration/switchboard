@@ -52,6 +52,7 @@ const selection = { files: [file], pattern: 'guard refuses removed member' };
 
 it('accepts actual selected passes and reports their deciding facts', (): void => {
 	const verdict = decideTestRun({
+		checkoutRoot: '/checkout',
 		report: testReportSchema.parse(report()),
 		selection,
 		runtimeErrors: 0,
@@ -67,17 +68,20 @@ it('accepts actual selected passes and reports their deciding facts', (): void =
 		restored: null,
 		remaining: [],
 		leftAtExit: [],
+		cleanup: 'natural',
 	};
 	expect(reportPassed([row])).toBe(true);
 	expect(renderReport([row])).toContain('flow | node | aaaaaaaaaaaa | 1/0/0 | PASS | n/a | 0');
 	expect(reportPassed([])).toBe(false);
+	expect(reportPassed([{ ...row, cleanup: 'intervened' }])).toBe(false);
+	expect(reportPassed([{ ...row, leftAtExit: [12], cleanup: 'natural' }])).toBe(true);
 	expect(reportPassed([{ ...row, restored: false }])).toBe(false);
 	expect(renderReport([{ ...row, remaining: [], leftAtExit: [12] }])).toContain(
-		'| 0 (cleaned 1 after exit)',
+		'| 0 (exited naturally 1 after parent exit)',
 	);
-	expect(renderReport([{ ...row, remaining: [12], leftAtExit: [12] }])).toContain(
-		'| 1 (at parent exit 1)',
-	);
+	expect(
+		renderReport([{ ...row, remaining: [12], leftAtExit: [12], cleanup: 'intervened' }]),
+	).toContain('| 1 (termination requested for 1 after parent exit)');
 });
 it.each([
 	{ name: 'zero tests', value: { ...report(), numPassedTests: 0, testResults: [] } },
@@ -86,8 +90,13 @@ it.each([
 	{ name: 'failed assertion', value: report({ passed: 0, failed: 1 }) },
 ])('refuses $name as a passing flow', ({ value }): void => {
 	expect(
-		decideTestRun({ report: testReportSchema.parse(value), selection, runtimeErrors: 0, process })
-			.kind,
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: testReportSchema.parse(value),
+			selection,
+			runtimeErrors: 0,
+			process,
+		}).kind,
 	).toBe('failed');
 });
 it('does not accept signalled, leaked, stale-count or duplicate reports', (): void => {
@@ -97,6 +106,7 @@ it('does not accept signalled, leaked, stale-count or duplicate reports', (): vo
 	])
 		expect(
 			decideTestRun({
+				checkoutRoot: '/checkout',
 				report: testReportSchema.parse(report()),
 				selection,
 				runtimeErrors: 0,
@@ -105,6 +115,7 @@ it('does not accept signalled, leaked, stale-count or duplicate reports', (): vo
 		).toBe('failed');
 	expect(
 		decideTestRun({
+			checkoutRoot: '/checkout',
 			report: testReportSchema.parse({ ...report(), numPassedTests: 2 }),
 			selection,
 			runtimeErrors: 0,
@@ -113,6 +124,7 @@ it('does not accept signalled, leaked, stale-count or duplicate reports', (): vo
 	).toBe('failed');
 	expect(
 		decideTestRun({
+			checkoutRoot: '/checkout',
 			report: testReportSchema.parse(report({ passed: 2 })),
 			selection,
 			runtimeErrors: 0,
@@ -122,20 +134,22 @@ it('does not accept signalled, leaked, stale-count or duplicate reports', (): vo
 });
 it('requires the selected assertion red, exact restoration, and the same selected case green', (): void => {
 	const red = decideTestRun({
+		checkoutRoot: '/checkout',
 		report: testReportSchema.parse(report({ passed: 0, failed: 1 })),
 		selection,
 		runtimeErrors: 0,
 		process: { ...process, code: 1 },
-		expected: { failure: 'expected 200 to be 403', count: 1 },
+		expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
 	});
 	const green = decideTestRun({
+		checkoutRoot: '/checkout',
 		report: testReportSchema.parse(report()),
 		selection,
 		runtimeErrors: 0,
 		process,
 	});
 	expect(red.kind).toBe('passed');
-	expect(red).toEqual({ kind: 'passed', assertion: 'guard.host.e2e.test.ts:17' });
+	expect(red).toEqual({ kind: 'passed', assertion: `${file}:17` });
 	expect(
 		renderReport([
 			{
@@ -147,9 +161,10 @@ it('requires the selected assertion red, exact restoration, and the same selecte
 				restored: true,
 				remaining: [],
 				leftAtExit: [],
+				cleanup: 'natural',
 			},
 		]),
-	).toContain('PASS (expected red: guard.host.e2e.test.ts:17)');
+	).toContain(`PASS (expected red: ${file}:17)`);
 	expect(decideSecurityCheck({ red, green, restored: true }).kind).toBe('passed');
 	expect(decideSecurityCheck({ red, green, restored: false }).kind).toBe('failed');
 	for (const message of [
@@ -159,11 +174,12 @@ it('requires the selected assertion red, exact restoration, and the same selecte
 	])
 		expect(
 			decideTestRun({
+				checkoutRoot: '/checkout',
 				report: testReportSchema.parse(report({ passed: 0, failed: 1, message })),
 				selection,
 				runtimeErrors: 0,
 				process: { ...process, code: 1 },
-				expected: { failure: 'expected 200 to be 403', count: 1 },
+				expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
 			}).kind,
 		).toBe('failed');
 });
@@ -173,6 +189,7 @@ it('rejects a same-case assertion failure at the wrong line, even when the messa
 	const expected = { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } };
 	expect(
 		decideTestRun({
+			checkoutRoot: '/checkout',
 			report: parsed,
 			selection,
 			runtimeErrors: 0,
@@ -182,6 +199,7 @@ it('rejects a same-case assertion failure at the wrong line, even when the messa
 	).toBe('passed');
 	expect(
 		decideTestRun({
+			checkoutRoot: '/checkout',
 			report: parsed,
 			selection,
 			runtimeErrors: 0,
@@ -193,6 +211,7 @@ it('rejects a same-case assertion failure at the wrong line, even when the messa
 
 it('reports unknown cleanup as a failed outcome and never as zero leftovers', (): void => {
 	const verdict = decideTestRun({
+		checkoutRoot: '/checkout',
 		report: testReportSchema.parse(report()),
 		selection,
 		runtimeErrors: 0,
@@ -207,6 +226,7 @@ it('reports unknown cleanup as a failed outcome and never as zero leftovers', ()
 		verdict,
 		remaining: null,
 		leftAtExit: null,
+		cleanup: 'unknown',
 		restored: null,
 	};
 	expect(renderReport([row])).toContain('| unknown');
@@ -224,17 +244,178 @@ it('rejects ambiguous edits and checks the entire original source map on restore
 
 it('refuses intended assertion reds contaminated by unhandled or suite-level errors', (): void => {
 	const parsed = testReportSchema.parse(report({ passed: 0, failed: 1 }));
-	const expected = { failure: 'expected 200 to be 403', count: 1 };
+	const expected = { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } };
 	const ending = { ...process, code: 1 };
 	expect(
-		decideTestRun({ report: parsed, selection, process: ending, expected, runtimeErrors: 1 }).kind,
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: parsed,
+			selection,
+			process: ending,
+			expected,
+			runtimeErrors: 1,
+		}).kind,
 	).toBe('failed');
 	const withHookError = {
 		...parsed,
 		testResults: parsed.testResults.map((suite) => ({ ...suite, message: 'afterAll failed' })),
 	};
 	expect(
-		decideTestRun({ report: withHookError, selection, process: ending, expected, runtimeErrors: 0 })
-			.kind,
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: withHookError,
+			selection,
+			process: ending,
+			expected,
+			runtimeErrors: 0,
+		}).kind,
 	).toBe('failed');
+});
+
+it.each([
+	{
+		name: 'wrong path with the same basename',
+		messages: [
+			`AssertionError: expected 200 to be 403\n at packages/other/guard.host.e2e.test.ts:17:4`,
+		],
+	},
+	{
+		name: 'text and location in separate errors',
+		messages: ['AssertionError: expected 200 to be 403', `Error: other failure\n at ${file}:17:4`],
+	},
+	{
+		name: 'an additional per-test teardown error',
+		messages: [
+			`AssertionError: expected 200 to be 403\n at ${file}:17:4`,
+			'Error: teardown failed',
+		],
+	},
+	{
+		name: 'a location in prose before the real stack',
+		messages: [
+			`AssertionError: expected 200 to be 403 at ${file}:17:4\n at packages/other/failure.ts:42:4`,
+		],
+	},
+])('refuses a security red with $name', ({ messages }): void => {
+	const parsed = report({ passed: 0, failed: 1 });
+	const value = {
+		...parsed,
+		testResults: parsed.testResults.map((suite) => ({
+			...suite,
+			assertionResults: suite.assertionResults.map((test) => ({
+				...test,
+				failureMessages: messages,
+			})),
+		})),
+	};
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: value,
+			selection,
+			runtimeErrors: 0,
+			process: { ...process, code: 1 },
+			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+		}).kind,
+	).toBe('failed');
+});
+
+it('fails when a required observation disappears while its siblings pass', (): void => {
+	const requiredSelection = {
+		...selection,
+		requiredNames: ['guard refuses removed member', 'fixed client, cookie and audit'],
+	};
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: report(),
+			selection: requiredSelection,
+			runtimeErrors: 0,
+			process,
+		}).kind,
+	).toBe('failed');
+});
+
+it.each([
+	{ name: 'absolute checkout frame', frame: `/checkout/${file}` },
+	{ name: 'file URL checkout frame', frame: `file:///checkout/${file}` },
+	{ name: 'named function checkout frame', frame: `assertMembership (/checkout/${file}` },
+])('accepts a single assertion with a $name', ({ frame }): void => {
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: report({
+				passed: 0,
+				failed: 1,
+				message: `AssertionError: expected 200 to be 403\n at ${frame}:17:4${frame.startsWith('assertMembership') ? ')' : ''}`,
+			}),
+			selection,
+			runtimeErrors: 0,
+			process: { ...process, code: 1 },
+			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+		}).kind,
+	).toBe('passed');
+});
+
+it('rejects an outside-checkout frame even with the correct path suffix', (): void => {
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: report({
+				passed: 0,
+				failed: 1,
+				message: `AssertionError: expected 200 to be 403\n at /other/${file}:17:4`,
+			}),
+			selection,
+			runtimeErrors: 0,
+			process: { ...process, code: 1 },
+			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+		}).kind,
+	).toBe('failed');
+});
+
+it('accepts the required observation when it ran', (): void => {
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: report(),
+			selection: { ...selection, requiredNames: ['guard refuses removed member'] },
+			runtimeErrors: 0,
+			process,
+		}).kind,
+	).toBe('passed');
+});
+
+it('rejects expected text that appears only in a tab-separated stack function label', (): void => {
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: report({
+				passed: 0,
+				failed: 1,
+				message: `AssertionError: a different comparison\n\tat\tObject.expected 200 to be 403 (/checkout/${file}:17:4)`,
+			}),
+			selection,
+			runtimeErrors: 0,
+			process: { ...process, code: 1 },
+			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+		}).kind,
+	).toBe('failed');
+});
+
+it('accepts the expected assertion header with a tab-separated stack frame', (): void => {
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report: report({
+				passed: 0,
+				failed: 1,
+				message: `AssertionError: expected 200 to be 403\n\tat\tObject.assertMembership (/checkout/${file}:17:4)`,
+			}),
+			selection,
+			runtimeErrors: 0,
+			process: { ...process, code: 1 },
+			expected: { failure: 'expected 200 to be 403', count: 1, location: { file, line: 17 } },
+		}).kind,
+	).toBe('passed');
 });

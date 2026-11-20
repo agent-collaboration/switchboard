@@ -4,12 +4,17 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import {
+	withNativeBrowserCleanup,
+	type NativeBrowserFailure,
+} from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import { nativeBrowserGroups } from '#sign-in-test-support/test-fixtures/native-browser-groups';
 import {
 	executeNativeAwait,
 	observeNativeAcquisition,
 	type NativeAwaitObserver,
 } from '#sign-in-test-support/test-fixtures/native-browser-progress';
+import type { GroupSignalAttempt } from '#sign-in-test-support/test-fixtures/owned-process-group';
 
 const wireSchema = z.object({
 	id: z.number().optional(),
@@ -43,6 +48,10 @@ interface PendingCall {
 	readonly reject: (reason: Error) => void;
 }
 
+type ProtocolDispatch =
+	| { readonly kind: 'unavailable'; readonly error: Error }
+	| { readonly kind: 'sent'; readonly answer: Promise<unknown> };
+
 /**
  * One owned DevTools connection. Every wait ends on a protocol event: a reply, an event, or the
  * socket closing or failing (R33: no real-time bound in tests). A Chrome that hangs without any
@@ -57,7 +66,7 @@ export class ChromeProtocol {
 	private readonly history = new Map<string, RetainedProtocolEvent[]>();
 	private nextEventSequence = 0;
 	/** Set once the socket closed or failed: later calls and waits reject at once. */
-	private ended: Error | null = null;
+	private ended: { readonly kind: 'closed' | 'failed'; readonly error: Error } | null = null;
 
 	private constructor(private readonly socket: WebSocket) {
 		socket.addEventListener('message', (event): void => {
@@ -92,8 +101,8 @@ export class ChromeProtocol {
 				this.rejectPending(error instanceof Error ? error : new Error('Invalid DevTools reply'));
 			}
 		});
-		socket.addEventListener('close', (): void => this.end(new Error('DevTools connection closed')));
-		socket.addEventListener('error', (): void => this.end(new Error('DevTools connection failed')));
+		socket.addEventListener('close', (): void => this.end('closed'));
+		socket.addEventListener('error', (): void => this.end('failed'));
 	}
 
 	static async connect(url: string): Promise<ChromeProtocol> {
@@ -114,26 +123,51 @@ export class ChromeProtocol {
 		return new ChromeProtocol(socket);
 	}
 
+	private dispatch(
+		method: string,
+		parameters: Readonly<Record<string, unknown>>,
+	): ProtocolDispatch {
+		if (this.ended !== null) return { kind: 'unavailable', error: this.ended.error };
+		if (this.socket.readyState !== WebSocket.OPEN)
+			return { kind: 'unavailable', error: new Error('DevTools connection is not open') };
+		const id = ++this.nextId;
+		const answer = Promise.withResolvers<unknown>();
+		this.pending.set(id, { method, resolve: answer.resolve, reject: answer.reject });
+		try {
+			this.socket.send(JSON.stringify({ id, method, params: parameters }));
+		} catch (error) {
+			this.pending.delete(id);
+			void answer.promise.catch((): void => {});
+			return {
+				kind: 'unavailable',
+				error: error instanceof Error ? error : new Error('DevTools send failed'),
+			};
+		}
+		return { kind: 'sent', answer: answer.promise };
+	}
+
 	async call<TValue>(
 		method: string,
 		parameters: Readonly<Record<string, unknown>>,
 		schema: z.ZodType<TValue>,
 	): Promise<TValue> {
-		if (this.ended !== null) throw this.ended;
-		const id = ++this.nextId;
-		const answer = new Promise<unknown>((resolve, reject): void => {
-			this.pending.set(id, { method, resolve, reject });
-		});
+		const request = this.dispatch(method, parameters);
+		if (request.kind === 'unavailable') throw request.error;
+		return schema.parse(await request.answer);
+	}
+
+	/** EOF is expected only after an actual close dispatch; a refusal or unusable wire needs fallback. */
+	async requestBrowserClose(): Promise<'requested' | 'unavailable'> {
+		const request = this.dispatch('Browser.close', {});
+		if (request.kind === 'unavailable') return 'unavailable';
 		try {
-			this.socket.send(JSON.stringify({ id, method, params: parameters }));
+			emptyResult.parse(await request.answer);
+			return 'requested';
 		} catch (error) {
-			const pending = this.pending.get(id);
-			if (pending !== undefined) {
-				this.pending.delete(id);
-				pending.reject(error instanceof Error ? error : new Error('DevTools send failed'));
-			}
+			return this.ended?.kind === 'closed' && error === this.ended.error
+				? 'requested'
+				: 'unavailable';
 		}
-		return schema.parse(await answer);
 	}
 
 	on(method: string, listener: (parameters: unknown) => void): () => void {
@@ -148,7 +182,7 @@ export class ChromeProtocol {
 	async waitFor(method: string, predicate: (parameters: unknown) => boolean): Promise<unknown> {
 		const recorded = this.history.get(method)?.find((event) => predicate(event.parameters));
 		if (recorded !== undefined) return recorded.parameters;
-		if (this.ended !== null) throw this.ended;
+		if (this.ended !== null) throw this.ended.error;
 		return new Promise<unknown>((resolve, reject): void => {
 			const unsubscribe = this.on(method, (parameters): void => {
 				if (!predicate(parameters)) return;
@@ -181,7 +215,7 @@ export class ChromeProtocol {
 		if (recorded !== undefined)
 			return { completed: Promise.resolve(recorded.method), cancel: (): void => {} };
 		if (this.ended !== null)
-			return { completed: Promise.reject(this.ended), cancel: (): void => {} };
+			return { completed: Promise.reject(this.ended.error), cancel: (): void => {} };
 		const result = Promise.withResolvers<NetworkTerminalMethod>();
 		const unsubscribe: (() => void)[] = [];
 		let pending = true;
@@ -220,8 +254,14 @@ export class ChromeProtocol {
 		for (const method of methods) this.history.delete(method);
 	}
 
-	private end(error: Error): void {
-		this.ended ??= error;
+	private end(kind: 'closed' | 'failed'): void {
+		this.ended ??= {
+			kind,
+			error: new Error(
+				kind === 'closed' ? 'DevTools connection closed' : 'DevTools connection failed',
+			),
+		};
+		const error = this.ended.error;
 		this.rejectPending(error);
 		for (const rejectWaiter of this.waiters) rejectWaiter(error);
 		this.waiters.clear();
@@ -298,6 +338,7 @@ export async function startHeadlessChrome(
 	await observeAwait('Chrome launch: private profile creation', () =>
 		mkdir(profile, { mode: 0o700 }),
 	);
+	nativeBrowserGroups.assertAccepting();
 	const child = spawn(
 		z
 			.string()
@@ -315,22 +356,26 @@ export async function startHeadlessChrome(
 			'--host-resolver-rules=MAP localhost 127.0.0.1',
 			'about:blank',
 		],
-		{ stdio: ['ignore', 'ignore', 'pipe'] },
+		{ stdio: ['ignore', 'ignore', 'pipe'], detached: true },
 	);
 	child.stderr?.on('data', (): void => undefined);
+	const parentExited = new Promise<void>((resolve, reject): void => {
+		child.once('exit', (): void => resolve());
+		child.once('error', reject);
+	});
+	void parentExited.catch((): void => {});
 	let browser: ChromeProtocol | undefined;
 	let page: ChromeProtocol | undefined;
-	async function close(): Promise<void> {
+	const requestParentClose = async (
+		requestTermination: () => GroupSignalAttempt,
+	): Promise<NativeBrowserFailure> => {
 		const failures: unknown[] = [];
 		const closingBrowser = browser;
+		let closeRequest: 'requested' | 'unavailable' = 'unavailable';
 		if (child.exitCode === null && closingBrowser !== undefined) {
 			try {
 				await observeCleanup('Chrome close: Browser.close reply', async (): Promise<void> => {
-					try {
-						await closingBrowser.call('Browser.close', {}, emptyResult);
-					} catch {
-						/* Browser closes its socket before acknowledging. */
-					}
+					closeRequest = await closingBrowser.requestBrowserClose();
 				});
 			} catch (error) {
 				failures.push(error);
@@ -338,23 +383,41 @@ export async function startHeadlessChrome(
 		}
 		page?.disconnect();
 		browser?.disconnect();
-		if (child.exitCode === null && child.signalCode === null) {
-			// Arm exit and attempt the original signal even if checkpoint storage rejects.
-			const exited = new Promise<void>((resolve, reject): void => {
-				child.once('exit', (): void => resolve());
-				if (!child.kill('SIGTERM')) reject(new Error('Cannot stop owned Chrome'));
-			});
-			void exited.catch(() => undefined);
-			try {
-				await observeCleanup('Chrome close: child exit', () => exited);
-			} catch (error) {
-				failures.push(error);
-			}
-		}
-		if (failures.length === 1) throw failures[0];
-		if (failures.length > 1)
-			throw new AggregateError(failures, 'Chrome close checkpoints failed', { cause: failures[0] });
+		// An unusable wire or failed launch has no dispatched close capability; its one owned signal still closes the parent.
+		if (closeRequest === 'unavailable' && child.exitCode === null && child.signalCode === null)
+			requestTermination();
+		return failures.length === 0
+			? { kind: 'none' }
+			: {
+					kind: 'failed',
+					error:
+						failures.length === 1
+							? failures[0]
+							: new AggregateError(failures, 'Chrome parent close checkpoints failed', {
+									cause: failures[0],
+								}),
+				};
+	};
+	const acquisition =
+		child.pid === undefined
+			? undefined
+			: nativeBrowserGroups.retain({
+					group: child.pid,
+					evidence,
+					parent: {
+						requestClose: requestParentClose,
+						waitForExit: () => observeCleanup('Chrome close: child exit', () => parentExited),
+					},
+				});
+	let closePromise: Promise<void> | undefined;
+	function close(): Promise<void> {
+		closePromise ??=
+			acquisition === undefined
+				? Promise.reject(new Error('Chrome has no owned process group'))
+				: acquisition.close().then((): void => {});
+		return closePromise;
 	}
+
 	try {
 		const starting = Promise.all([
 			readDevToolsEndpoint(child, evidence),

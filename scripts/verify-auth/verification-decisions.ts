@@ -1,6 +1,9 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { z } from 'zod';
+
+import type { OwnedGroupCleanup } from '../../packages/sign-in-test-support/src/test-fixtures/owned-process-group';
 
 const assertionSchema = z.object({
 	title: z.string(),
@@ -28,6 +31,7 @@ export interface TestSelection {
 	readonly files: readonly string[];
 	readonly pattern?: string;
 	readonly minimumPassed?: number;
+	readonly requiredNames?: readonly string[];
 	readonly allowedSkips?: readonly string[];
 }
 export interface ProcessResult {
@@ -59,12 +63,42 @@ export function observedAssertions(report: TestReport): readonly AssertionOutcom
 function failed(reason: string, assertion: string | null = null): Verdict {
 	return { kind: 'failed', reason, assertion };
 }
-export function assertionLocation(test: AssertionOutcome | undefined): string | null {
+const stackFrameStart = /^\s*(?:at\s+|❯\s+)/u;
+function assertionHeader(message: string): string {
+	const lines = message.split('\n');
+	const firstFrame = lines.findIndex((line) => stackFrameStart.test(line));
+	return lines.slice(0, firstFrame < 0 ? lines.length : firstFrame).join('\n');
+}
+
+/** Only a stack frame can identify an assertion; prose and later frames cannot repair it. */
+export function assertionLocation(
+	test: AssertionOutcome | undefined,
+	checkoutRoot: string,
+): string | null {
 	if (test === undefined) return null;
 	for (const message of test.messages) {
-		const location = /(?:\bat\s+[^\n]*?\()?([^\s()]+\.(?:ts|tsx)):(\d+):(\d+)/u.exec(message);
-		if (location?.[1] !== undefined && location[2] !== undefined)
-			return `${path.basename(location[1])}:${location[2]}`;
+		for (const line of message.split('\n')) {
+			const start = stackFrameStart.exec(line);
+			if (start === null) continue;
+			const frame = /^(?:[^()]*?\s+\()?([^()]+\.(?:ts|tsx)):(\d+):(\d+)\)?\s*$/u.exec(
+				line.slice(start[0].length),
+			);
+			if (frame?.[1] === undefined || frame[2] === undefined) continue;
+			try {
+				const file = frame[1].startsWith('file:') ? fileURLToPath(frame[1]) : frame[1];
+				const relative = path.relative(checkoutRoot, path.resolve(checkoutRoot, file));
+				if (
+					relative.length === 0 ||
+					relative.startsWith(`..${path.sep}`) ||
+					relative === '..' ||
+					path.isAbsolute(relative)
+				)
+					return null;
+				return `${relative.split(path.sep).join('/')}:${frame[2]}`;
+			} catch {
+				return null;
+			}
+		}
 	}
 	return null;
 }
@@ -72,10 +106,11 @@ export function assertionLocation(test: AssertionOutcome | undefined): string | 
 export interface ExpectedFailure {
 	readonly failure: string;
 	readonly count: number;
-	readonly location?: { readonly file: string; readonly line: number };
+	readonly location: { readonly file: string; readonly line: number };
 }
 
 export function decideTestRun(props: {
+	readonly checkoutRoot: string;
 	readonly report: TestReport;
 	readonly selection: TestSelection;
 	readonly process: ProcessResult;
@@ -117,6 +152,8 @@ export function decideTestRun(props: {
 		return failed('a selected file ran no tests');
 	if (new Set(active.map((test) => `${test.file}:${test.name}`)).size !== active.length)
 		return failed('duplicate executed test');
+	if (props.selection.requiredNames?.some((name) => !active.some((test) => test.name === name)))
+		return failed('a required observation did not run');
 	const passes = active.filter((test) => test.status === 'passed');
 	const failures = active.filter((test) => test.status === 'failed');
 	if (
@@ -142,29 +179,25 @@ export function decideTestRun(props: {
 			passes.length !== 0
 		)
 			return failed('security check did not produce exactly its intended failures');
+		const expected = props.expected;
+		const expectedLocation = `${expected.location.file}:${expected.location.line}`;
 		if (
-			failures.some(
-				(test) =>
-					!test.messages.some(
-						(message) =>
-							message.startsWith('AssertionError:') &&
-							message.includes(props.expected?.failure ?? ''),
-					) || assertionLocation(test) === null,
-			)
+			failures.some((test) => {
+				const message = test.messages.length === 1 ? test.messages[0] : undefined;
+				return (
+					message === undefined ||
+					!message.startsWith('AssertionError:') ||
+					!assertionHeader(message).includes(expected.failure) ||
+					assertionLocation(test, props.checkoutRoot) !== expectedLocation
+				);
+			})
 		)
 			return failed(
-				'security check failed outside the named assertion',
-				assertionLocation(failures[0] ?? active[0]),
+				'security check failed outside the single named assertion',
+				assertionLocation(failures[0], props.checkoutRoot),
 			);
-		if (props.expected.location !== undefined) {
-			const expectedLocation = `${path.basename(props.expected.location.file)}:${props.expected.location.line}`;
-			if (failures.some((test) => assertionLocation(test) !== expectedLocation))
-				return failed(
-					'security check failed at a different assertion',
-					assertionLocation(failures[0]),
-				);
-		}
-		const assertion = assertionLocation(failures[0]);
+
+		const assertion = assertionLocation(failures[0], props.checkoutRoot);
 		if (assertion === null) return failed('security red has no observed assertion');
 		return { kind: 'passed', assertion };
 	}
@@ -176,7 +209,7 @@ export function decideTestRun(props: {
 	)
 		return failed(
 			'test run failed',
-			failures[0] === undefined ? null : assertionLocation(failures[0]),
+			failures[0] === undefined ? null : assertionLocation(failures[0], props.checkoutRoot),
 		);
 	if (passes.length < (props.selection.minimumPassed ?? 1))
 		return failed('required tests did not all pass');
@@ -224,6 +257,7 @@ export interface DecidingFacts {
 	readonly restored: boolean | null;
 	readonly remaining: readonly number[] | null;
 	readonly leftAtExit: readonly number[] | null;
+	readonly cleanup: OwnedGroupCleanup['kind'];
 }
 export function reportPassed(rows: readonly DecidingFacts[]): boolean {
 	return (
@@ -231,6 +265,7 @@ export function reportPassed(rows: readonly DecidingFacts[]): boolean {
 		rows.every(
 			(row) =>
 				row.verdict.kind === 'passed' &&
+				row.cleanup === 'natural' &&
 				row.restored !== false &&
 				row.remaining !== null &&
 				row.remaining.length === 0,
@@ -242,7 +277,7 @@ export function renderReport(rows: readonly DecidingFacts[]): string {
 		'journey/check | host | commit | tests pass/fail/skip | result/assertion | restored | left running',
 		...rows.map(
 			(row) =>
-				`${row.id} | ${row.host} | ${row.commit.slice(0, 12)} | ${row.tests.passed}/${row.tests.failed}/${row.tests.skipped} | ${row.verdict.kind === 'passed' ? `PASS${row.verdict.assertion === undefined ? '' : ` (expected red: ${row.verdict.assertion})`}` : `FAIL: ${row.verdict.reason}${row.verdict.assertion === null ? '' : ` (${row.verdict.assertion})`}`} | ${row.restored === null ? 'n/a' : row.restored ? 'yes' : 'NO'} | ${row.remaining === null ? 'unknown' : row.remaining.length}${row.leftAtExit !== null && row.leftAtExit.length > 0 ? ` (${row.remaining?.length === 0 ? 'cleaned' : 'at parent exit'} ${row.leftAtExit.length}${row.remaining?.length === 0 ? ' after exit' : ''})` : ''}`,
+				`${row.id} | ${row.host} | ${row.commit.slice(0, 12)} | ${row.tests.passed}/${row.tests.failed}/${row.tests.skipped} | ${row.verdict.kind === 'passed' ? `PASS${row.verdict.assertion === undefined ? '' : ` (expected red: ${row.verdict.assertion})`}` : `FAIL: ${row.verdict.reason}${row.verdict.assertion === null ? '' : ` (${row.verdict.assertion})`}`} | ${row.restored === null ? 'n/a' : row.restored ? 'yes' : 'NO'} | ${row.remaining === null ? 'unknown' : row.remaining.length}${row.leftAtExit !== null && row.leftAtExit.length > 0 ? ` (${row.cleanup === 'natural' ? 'exited naturally' : 'termination requested for'} ${row.leftAtExit.length} after parent exit)` : ''}`,
 		),
 	].join('\n');
 }

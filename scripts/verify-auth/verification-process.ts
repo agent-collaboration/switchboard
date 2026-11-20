@@ -1,48 +1,22 @@
 import { spawn } from 'node:child_process';
-import { open, readFile, type FileHandle } from 'node:fs/promises';
+import { open, readFile, writeFile, type FileHandle } from 'node:fs/promises';
 
+import {
+	activeOwnedProcessMembers,
+	settleOwnedProcessGroup,
+	terminateOwnedProcessGroup,
+	type OwnedProcessIdentity,
+	type OwnedGroupCleanup,
+	type GroupSignalAttempt,
+} from '../../packages/sign-in-test-support/src/test-fixtures/owned-process-group';
 import type { ProcessResult } from './verification-decisions';
 
 export interface CommandResult extends ProcessResult {
 	readonly stdoutFile: string;
 	readonly stderrFile: string;
 	readonly leftAtExit: readonly number[] | null;
+	readonly cleanup: OwnedGroupCleanup;
 }
-function signalGroup(group: number, signal: NodeJS.Signals): void {
-	try {
-		process.kill(-group, signal);
-	} catch (error) {
-		if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error;
-	}
-}
-async function groupMembers(group: number): Promise<readonly number[]> {
-	const child = spawn('ps', ['-axo', 'pid=,pgid=,stat='], { stdio: ['ignore', 'pipe', 'pipe'] });
-	const chunks: Buffer[] = [];
-	child.stdout.on('data', (data: Buffer): void => {
-		chunks.push(data);
-	});
-	const ending = await new Promise<number | null>((resolve, reject) => {
-		child.once('error', reject);
-		child.once('close', resolve);
-	});
-	if (ending !== 0) throw new Error('Cannot observe owned process group');
-	return Buffer.concat(chunks)
-		.toString('utf8')
-		.split('\n')
-		.flatMap((line) => {
-			const [pid, pgid, status] = line.trim().split(/\s+/u);
-			return Number(pgid) === group && status !== undefined && !status.startsWith('Z')
-				? [Number(pid)]
-				: [];
-		});
-}
-async function observeReap(group: number, attempts: number): Promise<readonly number[]> {
-	const members = await groupMembers(group);
-	if (members.length === 0 || attempts === 0) return members;
-	// Each awaited ps completion is an OS event, not a timer or sleep.
-	return observeReap(group, attempts - 1);
-}
-
 /** Await parent exit, not pipe close: a surviving descendant cannot hold our cleanup hostage. */
 export async function runCommand(props: {
 	readonly executable: string;
@@ -50,7 +24,7 @@ export async function runCommand(props: {
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly logPrefix: string;
-	readonly observeGroup?: (group: number) => Promise<readonly number[]>;
+	readonly observeGroup?: (group: number) => Promise<readonly OwnedProcessIdentity[]>;
 	readonly openLog?: (file: string) => Promise<FileHandle>;
 }): Promise<CommandResult> {
 	const stdoutFile = `${props.logPrefix}.stdout.log`;
@@ -67,8 +41,16 @@ export async function runCommand(props: {
 				stdio: ['ignore', stdout.fd, stderr.fd],
 			});
 			const group = child.pid;
+			let termination: GroupSignalAttempt | undefined;
+			const terminateOnce = (): GroupSignalAttempt => {
+				termination ??=
+					group === undefined
+						? { kind: 'failed', signal: 'SIGTERM' }
+						: terminateOwnedProcessGroup(group);
+				return termination;
+			};
 			const cancel = (): void => {
-				if (group !== undefined) signalGroup(group, 'SIGKILL');
+				terminateOnce();
 			};
 			process.once('SIGINT', cancel);
 			process.once('SIGTERM', cancel);
@@ -80,11 +62,30 @@ export async function runCommand(props: {
 					child.once('error', reject);
 					child.once('exit', (code, signal): void => resolve({ code, signal }));
 				});
+				if (group === undefined) throw new Error('Missing owned process group');
+				let cleanup = await settleOwnedProcessGroup({
+					group,
+					...(props.observeGroup === undefined ? {} : { read: props.observeGroup }),
+					terminate: terminateOnce,
+					...(termination === undefined ? {} : { initialTermination: termination }),
+				});
+				const recordCleanup = (): Promise<void> =>
+					writeFile(`${props.logPrefix}.cleanup.json`, JSON.stringify(cleanup, null, 2) + '\n', {
+						mode: 0o600,
+					});
+				await recordCleanup();
+				// Cancellation can arrive during the asynchronous evidence write; it cannot become a pass.
+				if (cleanup.kind === 'natural' && termination !== undefined) {
+					cleanup = { ...cleanup, kind: 'intervened', termination };
+					await recordCleanup();
+				}
+
 				const leftAtExit =
-					group === undefined ? [] : await (props.observeGroup ?? groupMembers)(group);
-				if (group !== undefined && leftAtExit.length > 0) signalGroup(group, 'SIGKILL');
-				const remaining = group === undefined ? [] : await observeReap(group, 20);
-				return { ...ending, remaining, leftAtExit, stdoutFile, stderrFile };
+					cleanup.reads[0] === undefined
+						? null
+						: activeOwnedProcessMembers(cleanup.reads[0]).map((member) => member.pid);
+				const remaining = cleanup.remaining?.map((member) => member.pid) ?? null;
+				return { ...ending, remaining, leftAtExit, cleanup, stdoutFile, stderrFile };
 			} catch {
 				cancel();
 				return {
@@ -92,6 +93,13 @@ export async function runCommand(props: {
 					signal: null,
 					remaining: null,
 					leftAtExit: null,
+					cleanup: {
+						kind: 'unknown',
+						group: group ?? 0,
+						reads: [],
+						termination: termination ?? { kind: 'not-requested' },
+						remaining: null,
+					},
 					stdoutFile,
 					stderrFile,
 				};
@@ -120,8 +128,7 @@ export async function commandText(props: {
 		result.signal !== null ||
 		result.remaining === null ||
 		result.remaining.length > 0 ||
-		result.leftAtExit === null ||
-		result.leftAtExit.length > 0
+		result.cleanup.kind !== 'natural'
 	)
 		throw new Error('Required command did not finish cleanly');
 	return (await readFile(result.stdoutFile, 'utf8')).trim();

@@ -1,6 +1,9 @@
 import { expect, it } from 'vitest';
 
+import { securityChecks } from '../../verification/security-checks';
 import { resolveVerificationSelection } from './verification-cli';
+import { decideTestRun, testReportSchema } from './verification-decisions';
+import { selectSecurityTests } from './verification-runner';
 
 // The adopted single-baseline coverage table, independent of the producer lists.
 const journeys = ['passkey-sign-in', 'organizations', 'cli-sign-in', 'agents'];
@@ -48,4 +51,41 @@ it('rejects unknown, duplicated and empty selections before any target drive', (
 		expect(() => resolveVerificationSelection({ journey: 'all', flows, checks: 'none' })).toThrow();
 	for (const checks of ['unknown', 'F1,F1', 'F1,'])
 		expect(() => resolveVerificationSelection({ journey: 'all', flows: 'none', checks })).toThrow();
+});
+
+it('refuses duplicate first control observations across files when the second named observation is missing', (): void => {
+	const check = securityChecks.find((candidate) => candidate.id === 'HTTP09');
+	if (check === undefined) throw new Error('HTTP09 is required');
+	const file = 'packages/sign-in-test-support/src/people-membership-lookup.host.e2e.test.ts';
+	const title = 'people: lookup refuses member before a facts query and releases no subject fields';
+	const report = testReportSchema.parse({
+		success: false,
+		numPassedTests: 0,
+		numFailedTests: 2,
+		numPendingTests: 0,
+		numFailedTestSuites: 2,
+		testResults: [
+			file,
+			'packages/sign-in-test-support/src/people-organization-list.host.e2e.test.ts',
+		].map((name) => ({
+			name,
+			assertionResults: [
+				{
+					title,
+					status: 'failed',
+					failureMessages: [`AssertionError: expected 1 to be +0\n at /checkout/${file}:37:4`],
+				},
+			],
+		})),
+	});
+	expect(
+		decideTestRun({
+			checkoutRoot: '/checkout',
+			report,
+			selection: selectSecurityTests(check),
+			runtimeErrors: 0,
+			process: { code: 1, signal: null, remaining: [] },
+			expected: { failure: 'expected 1 to be +0', count: 2, location: { file, line: 37 } },
+		}).kind,
+	).toBe('failed');
 });

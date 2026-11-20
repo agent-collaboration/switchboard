@@ -7,6 +7,9 @@ import { z } from 'zod';
 
 import { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import { startHeadlessChrome } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import { registerNativeBrowserTestCleanup } from '#sign-in-test-support/test-fixtures/native-browser-test-cleanup';
+
+registerNativeBrowserTestCleanup();
 
 /** Hold the actual protocol reply until a lower sibling has changed the live document. */
 class LayoutInterleavedPage extends NativeBrowserPage {

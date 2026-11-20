@@ -23,6 +23,7 @@ it('resolves the multi-line expect to its matcher37, without admitting the neigh
 	expect(location).toEqual({ file, line: 37 });
 	const verdict = (line: number): string =>
 		decideTestRun({
+			checkoutRoot: '/checkout',
 			report: testReportSchema.parse({
 				success: false,
 				numPassedTests: 0,

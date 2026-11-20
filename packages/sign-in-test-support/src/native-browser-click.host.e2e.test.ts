@@ -7,6 +7,9 @@ import { z } from 'zod';
 
 import { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import { startHeadlessChrome } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import { registerNativeBrowserTestCleanup } from '#sign-in-test-support/test-fixtures/native-browser-test-cleanup';
+
+registerNativeBrowserTestCleanup();
 
 const targetSchema = z.object({
 	expectedControl: z.boolean(),

@@ -2,6 +2,9 @@ import { it, vi } from 'vitest';
 
 import { initialSignInTestTime } from '#sign-in-test-support/test-fixtures/controlled-sign-in-time';
 import { observeNativeSignInBrowser } from '#sign-in-test-support/test-fixtures/native-browser-scenario';
+import { registerNativeBrowserTestCleanup } from '#sign-in-test-support/test-fixtures/native-browser-test-cleanup';
+
+registerNativeBrowserTestCleanup();
 
 it.each(['node', 'cloudflare'] as const)(
 	'F native Better Auth browser journey on %s',
