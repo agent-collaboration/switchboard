@@ -25,7 +25,7 @@ import {
 } from '#sign-in-test-support/test-fixtures/auth-verification-journeys';
 import { runSupportingAuthUnitProof } from '#sign-in-test-support/test-fixtures/auth-verification-unit-proof';
 import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
-import { workspaceConfigurations } from '#sign-in-test-support/test-fixtures/local-auth-harness';
+import { workspaceConfigurations } from '#sign-in-test-support/test-fixtures/local-auth-configuration';
 import { nodeInvocationReceiptSchema } from '#sign-in-test-support/test-fixtures/node-management-bridge-contracts';
 import {
 	compareNodeProofReceipts,
@@ -697,7 +697,7 @@ export async function runAuthVerification(args: readonly string[]): Promise<numb
 	});
 	if (values.help === true) {
 		process.stdout
-			.write(`Usage: mise exec -- pnpm exec tsx scripts/verify-auth/verify-auth.ts agent|bootstrap|people|organization|revision-fence --target-file FILE
+			.write(`Usage: pnpm verify:sign-in organization|revision-fence --target-file FILE
 Runs the permanent real-workerd/D1/Better-Auth/Gateway host journey, with direct D1/DO and upstream-effect assertions.
 Organization selects native stamp/renewal and organization-provisioning cases; retains private request bytes and organization/public-key readbacks. Central answers are a recording stand-in, not central CAS/key-retention proof.
 Revision-fence selects native fences, person-fleet token release, revision drain/ACK, fleet-call recovery and both storage legs; supporting units isolate snapshot/session/native bounds; Node excludes the workerd deploy-backfill and no-scheduled-handler cases. Node startup backfill/no-interval wiring is separate integration proof.

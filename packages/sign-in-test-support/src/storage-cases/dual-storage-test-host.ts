@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { build } from 'esbuild';
 import { Miniflare, type WorkerOptions } from 'miniflare';
 import { z } from 'zod';
 
@@ -13,6 +12,7 @@ import {
 	executeStorageCommand,
 	type StorageCommand,
 } from '#sign-in-test-support/storage-cases/storage-commands';
+import { buildStorageProofApplication } from '#sign-in-test-support/storage-cases/storage-proof-application';
 import { prepareBaselineMigrations } from '#sign-in-test-support/test-fixtures/baseline-migrations';
 import { controlledWorkerDateScript } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import {
@@ -188,24 +188,4 @@ export async function createStorageTestHost(
 		},
 		close: () => runtime.dispose(),
 	};
-}
-
-/** The component runner and storage host freeze the same source-bundled application. */
-export async function buildStorageProofApplication(repositoryRoot: string): Promise<string> {
-	const bundled = await build({
-		absWorkingDir: repositoryRoot,
-		entryPoints: ['packages/sign-in-test-support/src/storage-cases/storage-proof-worker.ts'],
-		bundle: true,
-		write: false,
-		format: 'esm',
-		platform: 'neutral',
-		target: 'es2022',
-		conditions: ['workerd', 'worker', 'browser'],
-		mainFields: ['module', 'main'],
-		external: ['cloudflare:workers', 'node:*'],
-		logLevel: 'silent',
-	});
-	const module = bundled.outputFiles[0];
-	if (module === undefined) throw new Error('Storage Worker bundle is empty');
-	return module.text;
 }

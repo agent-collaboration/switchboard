@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
-import { buildStorageProofApplication } from '#sign-in-test-support/storage-cases/dual-storage-test-host';
+import { buildStorageProofApplication } from '#sign-in-test-support/storage-cases/storage-proof-application';
 import { controlledWorkerDateScript } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import { proofModuleHashes } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 import {
