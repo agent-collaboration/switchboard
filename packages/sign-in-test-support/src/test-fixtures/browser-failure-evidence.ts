@@ -24,6 +24,27 @@ interface MeasuredButtonRect {
 	readonly height: number;
 }
 
+const summarizedRequestPaths = new Set([
+	'/sign-in',
+	'/owner-ready',
+	'/organization-admin',
+	'/api/auth/get-session',
+	'/api/auth/sign-in/social',
+	'/api/auth/callback/google',
+	'/api/auth/two-factor/enable',
+	'/api/auth/two-factor/verify-totp',
+	'/api/auth/passkey/list-user-passkeys',
+	'/api/auth/passkey/generate-register-options',
+	'/api/auth/passkey/verify-registration',
+	'/api/auth/passkey/generate-authenticate-options',
+	'/api/auth/passkey/verify-authentication',
+	'/api/auth/organization/create',
+	'/api/auth/organization/set-active',
+	'/api/auth/organization/people',
+	'/api/auth/organization/people-list',
+	'/api/auth/organization/person-membership',
+]);
+
 export const browserPointerBinding = 'reportProofBrowserPointer';
 
 /** Retains only fields suitable for the public repository's failure artifact. */
@@ -48,11 +69,8 @@ export class BrowserFailureEvidence {
 		page.on('request', (request): void => {
 			const url = new URL(request.url());
 			if (url.origin !== origin) return;
-			// Authentication responses can carry credentials in the query. Retain only the route.
-			const pathname = url.pathname.startsWith('/assets/') ? '/assets/[file]' : url.pathname;
-			if (/^\/[a-z/-]+$/u.test(pathname) || pathname === '/assets/[file]')
-				this.lastNetworkRequest = `${request.method()} ${pathname}`;
-			else this.lastNetworkRequest = `${request.method()} [route omitted]`;
+			const route = summarizedRequestPaths.has(url.pathname) ? url.pathname : '[route omitted]';
+			this.lastNetworkRequest = `${request.method()} ${route}`;
 		});
 	}
 

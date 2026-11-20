@@ -55,8 +55,9 @@ capture();
 let resolveHandled;
 const handled=new Promise(resolve=>{resolveHandled=resolve;});
 const outcome=new PerformanceObserver((entries)=>{
-if(entries.getEntriesByName(${JSON.stringify('organization-people:' + operation + '-handled')}).length===0)return;
-outcome.disconnect();resolveHandled(true);
+const decision=entries.getEntriesByName(${JSON.stringify('organization-people:' + operation + '-handled')})[0];
+if(!decision)return;
+outcome.disconnect();resolveHandled(decision.detail);
 });
 outcome.observe({entryTypes:['mark']});
 window.peoplePublicationProbe={publications,handled,stale,close:()=>{dom.disconnect();outcome.disconnect();resolveStale(false);}};
@@ -64,6 +65,19 @@ return true;
 })()`,
 		z.literal(true),
 	);
+}
+
+const committedPeopleReply = z.object({
+	generation: z.number().int().nonnegative(),
+	outcome: z.enum(['applied', 'discarded-as-stale']),
+});
+
+async function requireDiscardedOlderReply(page: PlaywrightBrowserPage): Promise<void> {
+	const decision = await page.evaluate(
+		'window.peoplePublicationProbe.handled',
+		committedPeopleReply,
+	);
+	expect(decision.outcome).toBe('discarded-as-stale');
 }
 
 async function requireFreshPeoplePublication(
@@ -311,7 +325,7 @@ export async function exerciseOrganizationPeople(
 		async (): Promise<void> => {
 			// The newer reply stays held until the component has processed the older reply.
 			await responses.release(firstHeld);
-			await page.evaluate('window.peoplePublicationProbe.handled', z.literal(true));
+			await requireDiscardedOlderReply(page);
 			const whileNewerLookupPending = await page.evaluate(
 				`({current:document.querySelector(${JSON.stringify(resultRegion)})?.textContent,publications:window.peoplePublicationProbe.publications})`,
 				z.object({ current: z.string(), publications: z.array(z.string()) }),
@@ -405,7 +419,7 @@ export async function exerciseOrganizationPeople(
 	await withNativeBrowserCleanup(
 		async (): Promise<void> => {
 			await responses.release(page50Held);
-			await page.evaluate('window.peoplePublicationProbe.handled', z.literal(true));
+			await requireDiscardedOlderReply(page);
 			const whilePage100Pending = await page.evaluate(
 				`({loading:!!document.querySelector('table[aria-label="Members"] [aria-label="Loading people"]'),emails:Array.from(document.querySelectorAll('table[aria-label="Members"] tbody button')).map(button=>button.textContent.trim()),publications:window.peoplePublicationProbe.publications})`,
 				z.object({

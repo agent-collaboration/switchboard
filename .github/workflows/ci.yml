@@ -86,15 +86,7 @@ jobs:
       - name: Record browser version
         run: |
           pnpm --filter ./packages/sign-in-test-support exec playwright --version
-          pnpm --filter ./packages/sign-in-test-support exec node --input-type=module -e '
-            import { chromium } from "playwright";
-            const browser = await chromium.launch({ timeout: 0 });
-            try {
-              console.log(`Chromium ${browser.version()}`);
-            } finally {
-              await browser.close();
-            }
-          '
+          pnpm exec vitest run --project e2e-host packages/sign-in-test-support/src/native-browser-click.host.e2e.test.ts -t '^dispatches real native input to a stable selected control$' --maxWorkers=1
 
       - name: Run E2E lane
         env:

@@ -50,12 +50,13 @@ export async function observeNativePasskeyNoUserVerification(props: {
 			"location.pathname==='/sign-in' && !!document.querySelector('[data-sonner-toast][data-type=\"error\"][data-visible=\"true\"]') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Continue with Passkey'&&!button.disabled)",
 		),
 	);
-	await observeAwait('no-UV: visible refusal message', () =>
-		page.evaluate(
-			`document.querySelector('[data-sonner-toast][data-type="error"][data-visible="true"] [data-title]')?.textContent?.trim()`,
-			z.literal('user-verification-required'),
-		),
-	);
+	await observeAwait('no-UV: visible refusal message', async (): Promise<void> => {
+		page.recordAwait('no-UV: visible refusal title');
+		const notice = page.page
+			.locator('[data-sonner-toast][data-type="error"][data-visible="true"] [data-title]')
+			.filter({ hasText: /^user-verification-required$/u });
+		if (!(await notice.isVisible())) throw new Error('No-UV refusal title was not visible');
+	});
 	await observeAwait('no-UV: signed-out session fetch and JSON', () =>
 		page.evaluate(
 			"fetch('/api/auth/get-session').then(response=>response.json()).then(session=>{if(session!==null)throw new Error('No-UV session exists');return true;})",
