@@ -696,8 +696,7 @@ export async function runAuthVerification(args: readonly string[]): Promise<numb
 		options: { help: { type: 'boolean' }, 'target-file': { type: 'string' } },
 	});
 	if (values.help === true) {
-		process.stdout
-			.write(`Usage: pnpm verify:sign-in organization|revision-fence --target-file FILE
+		process.stdout.write(`Usage: pnpm verify:sign-in organization|revision-fence --target-file FILE
 Runs the permanent real-workerd/D1/Better-Auth/Gateway host journey, with direct D1/DO and upstream-effect assertions.
 Organization selects native stamp/renewal and organization-provisioning cases; retains private request bytes and organization/public-key readbacks. Central answers are a recording stand-in, not central CAS/key-retention proof.
 Revision-fence selects native fences, person-fleet token release, revision drain/ACK, fleet-call recovery and both storage legs; supporting units isolate snapshot/session/native bounds; Node excludes the workerd deploy-backfill and no-scheduled-handler cases. Node startup backfill/no-interval wiring is separate integration proof.
