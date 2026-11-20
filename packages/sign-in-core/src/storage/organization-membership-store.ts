@@ -1,6 +1,17 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, count, eq, notExists } from 'drizzle-orm';
 import { z } from 'zod';
 
+import {
+	organizationMembershipSchema,
+	PEOPLE_PAGE_SIZE,
+	type OrganizationMembership,
+} from '#sign-in-core/contracts/organization-membership';
+import {
+	personMembershipFactsSchema,
+	organizationPeoplePageSchema,
+	type PersonMembershipFacts,
+	type OrganizationPeoplePage,
+} from '#sign-in-core/organizations/checked-read-transitions';
 import type {
 	OrganizationProvisioningStore,
 	OrganizationFleetState,
@@ -11,25 +22,25 @@ import type {
 } from '#sign-in-core/storage/models/sign-in-database';
 import {
 	organizationIdSchema,
-	personIdSchema,
 	type OrganizationId,
 	type PersonId,
 } from '#sign-in-core/storage/models/sign-in-store';
-import { member, organization } from '#sign-in-core/storage/sign-in-schema';
+import { invitation, member, organization, user } from '#sign-in-core/storage/sign-in-schema';
 import {
 	availableStoreValue,
 	readStoreValue,
 	storeFailure,
 } from '#sign-in-core/storage/store-query-results';
 
-export const organizationMembershipSchema = z.strictObject({
-	organizationId: organizationIdSchema,
-	organizationName: z.string(),
-	personId: personIdSchema,
-	role: z.enum(['owner', 'member']),
-});
-export type OrganizationMembership = z.infer<typeof organizationMembershipSchema>;
 export interface OrganizationMembershipRecords extends OrganizationProvisioningStore {
+	readonly readPersonMembershipFacts: (request: {
+		readonly organizationId: OrganizationId;
+		readonly email: string;
+	}) => Promise<SignInStoreResult<PersonMembershipFacts>>;
+	readonly listOrganizationPeople: (request: {
+		readonly organizationId: OrganizationId;
+		readonly offset: number;
+	}) => Promise<SignInStoreResult<OrganizationPeoplePage>>;
 	readonly readyOrganizationIds: () => Promise<SignInStoreResult<readonly OrganizationId[]>>;
 	readonly readMemberRole: (request: {
 		readonly organizationId: OrganizationId;
@@ -45,6 +56,116 @@ export function createOrganizationMembershipStore(
 	openDatabase: SignInDatabaseFactory,
 ): OrganizationMembershipRecords {
 	return {
+		async readPersonMembershipFacts(request): Promise<SignInStoreResult<PersonMembershipFacts>> {
+			const membership = await readStoreValue(
+				async () =>
+					(
+						await openDatabase()
+							.select({ role: member.role })
+							.from(member)
+							.innerJoin(user, eq(member.userId, user.id))
+							.where(
+								and(
+									eq(member.organizationId, request.organizationId),
+									eq(user.email, request.email),
+								),
+							)
+							.limit(1)
+					)[0] ?? null,
+				organizationMembershipSchema.pick({ role: true }).nullable(),
+			);
+			if (membership.kind === 'store-unavailable') return membership;
+			if (membership.value !== null)
+				return availableStoreValue({ kind: 'member', role: membership.value.role });
+			return readStoreValue(async () => {
+				const rows = await openDatabase()
+					.select({ id: invitation.id, status: invitation.status, expiresAt: invitation.expiresAt })
+					.from(invitation)
+					.where(
+						and(
+							eq(invitation.organizationId, request.organizationId),
+							eq(invitation.email, request.email),
+						),
+					)
+					.orderBy(asc(invitation.id));
+				return {
+					kind: 'invitations',
+					rows: rows.map(({ id, status, expiresAt }) => ({
+						id,
+						status,
+						expiresAt: expiresAt.getTime(),
+					})),
+				};
+			}, personMembershipFactsSchema);
+		},
+		async listOrganizationPeople(request): Promise<SignInStoreResult<OrganizationPeoplePage>> {
+			const members = await readStoreValue(
+				async () =>
+					openDatabase()
+						.select({ name: user.name, email: user.email, role: member.role })
+						.from(member)
+						.innerJoin(user, eq(member.userId, user.id))
+						.where(eq(member.organizationId, request.organizationId))
+						.orderBy(asc(member.createdAt), asc(member.id))
+						.limit(PEOPLE_PAGE_SIZE)
+						.offset(request.offset),
+				organizationPeoplePageSchema.shape.members,
+			);
+			if (members.kind === 'store-unavailable') return members;
+			const total = await readStoreValue(
+				async () =>
+					(
+						await openDatabase()
+							.select({ total: count() })
+							.from(member)
+							.where(eq(member.organizationId, request.organizationId))
+					)[0],
+				z.strictObject({ total: organizationPeoplePageSchema.shape.memberTotal }),
+			);
+			if (total.kind === 'store-unavailable') return total;
+			return readStoreValue(async () => {
+				const database = openDatabase();
+				const rows = await database
+					.select({
+						id: invitation.id,
+						status: invitation.status,
+						expiresAt: invitation.expiresAt,
+						email: invitation.email,
+						role: invitation.role,
+					})
+					.from(invitation)
+					.where(
+						and(
+							eq(invitation.organizationId, request.organizationId),
+							notExists(
+								database
+									.select({ id: member.id })
+									.from(member)
+									.innerJoin(user, eq(member.userId, user.id))
+									.where(
+										and(
+											eq(member.organizationId, request.organizationId),
+											eq(user.email, invitation.email),
+										),
+									),
+							),
+						),
+					)
+					.orderBy(asc(invitation.id));
+				return {
+					members: members.value,
+					memberTotal: total.value.total,
+					offset: request.offset,
+					invitations: rows.map(({ id, status, expiresAt, email, role }) => ({
+						id,
+						status,
+						expiresAt: expiresAt.getTime(),
+						email,
+						role,
+					})),
+				};
+			}, organizationPeoplePageSchema);
+		},
 		async readyOrganizationIds(): Promise<SignInStoreResult<readonly OrganizationId[]>> {
 			const rows = await readStoreValue(
 				async () =>

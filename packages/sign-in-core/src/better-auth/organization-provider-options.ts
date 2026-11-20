@@ -1,5 +1,9 @@
 import { APIError } from 'better-auth/api';
-import { organization, type OrganizationOptions } from 'better-auth/plugins/organization';
+import {
+	organization,
+	type OrganizationOptions,
+	type DefaultOrganizationPlugin,
+} from 'better-auth/plugins/organization';
 import { z } from 'zod';
 
 import {
@@ -21,6 +25,11 @@ import {
 } from '#sign-in-core/organizations/organization-provisioning';
 import { organizationIdSchema, type SignInStore } from '#sign-in-core/storage/models/sign-in-store';
 
+type SignInOrganizationOptions = OrganizationOptions & {
+	readonly ac: typeof organizationAccessControl;
+	readonly roles: typeof organizationRoles;
+};
+
 export function createOrganizationProviderPlugin(props: {
 	readonly ownerEmail: string;
 	readonly store: Pick<SignInStore, 'organizations' | 'organizationStamps' | 'peopleChanges'> & {
@@ -29,7 +38,7 @@ export function createOrganizationProviderPlugin(props: {
 	readonly platform: Pick<SignInPlatform, 'clock' | 'ids' | 'centralClient' | 'log'>;
 	readonly requestState: ProviderRequestState;
 	readonly signStatement: SignOrganizationStatement;
-}): ReturnType<typeof organization> {
+}): DefaultOrganizationPlugin<SignInOrganizationOptions> {
 	const roles = createOrganizationRoleHooks();
 	async function requireOrganizationStepUp(): Promise<void> {
 		const actor = props.requestState.organizationActor;
@@ -84,7 +93,7 @@ export function createOrganizationProviderPlugin(props: {
 			requireStoredValue(outcome);
 		}
 	}
-	const options: OrganizationOptions = {
+	const options: SignInOrganizationOptions = {
 		ac: organizationAccessControl,
 		roles: organizationRoles,
 		creatorRole: 'owner',

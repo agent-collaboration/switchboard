@@ -4,6 +4,13 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
+import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import {
+	executeNativeAwait,
+	observeNativeAcquisition,
+	type NativeAwaitObserver,
+} from '#sign-in-test-support/test-fixtures/native-browser-progress';
+
 const wireSchema = z.object({
 	id: z.number().optional(),
 	method: z.string().optional(),
@@ -22,6 +29,14 @@ const pageTargetsSchema = z.array(
 	z.object({ id: z.string(), webSocketDebuggerUrl: z.string().optional() }),
 );
 
+interface RetainedProtocolEvent {
+	readonly sequence: number;
+	readonly parameters: unknown;
+}
+const networkTerminalMethods = ['Network.loadingFinished', 'Network.loadingFailed'] as const;
+export type NetworkTerminalMethod = (typeof networkTerminalMethods)[number];
+const networkRequestIdentitySchema = z.object({ requestId: z.string() });
+
 interface PendingCall {
 	readonly method: string;
 	readonly resolve: (value: unknown) => void;
@@ -39,7 +54,8 @@ export class ChromeProtocol {
 	/** Event waiters reject with pending calls when the connection ends. */
 	private readonly waiters = new Set<(reason: Error) => void>();
 	private readonly listeners = new Map<string, Set<(parameters: unknown) => void>>();
-	private readonly history = new Map<string, unknown[]>();
+	private readonly history = new Map<string, RetainedProtocolEvent[]>();
+	private nextEventSequence = 0;
 	/** Set once the socket closed or failed: later calls and waits reject at once. */
 	private ended: Error | null = null;
 
@@ -62,10 +78,11 @@ export class ChromeProtocol {
 							'Page.frameNavigated',
 							'Target.targetCreated',
 							'Network.loadingFinished',
+							'Network.loadingFailed',
 						].includes(message.method)
 					) {
 						const history = this.history.get(message.method) ?? [];
-						history.push(message.params);
+						history.push({ sequence: ++this.nextEventSequence, parameters: message.params });
 						if (history.length > 100) history.shift();
 						this.history.set(message.method, history);
 					}
@@ -129,8 +146,8 @@ export class ChromeProtocol {
 	}
 
 	async waitFor(method: string, predicate: (parameters: unknown) => boolean): Promise<unknown> {
-		const recorded = this.history.get(method)?.find(predicate);
-		if (recorded !== undefined) return recorded;
+		const recorded = this.history.get(method)?.find((event) => predicate(event.parameters));
+		if (recorded !== undefined) return recorded.parameters;
 		if (this.ended !== null) throw this.ended;
 		return new Promise<unknown>((resolve, reject): void => {
 			const unsubscribe = this.on(method, (parameters): void => {
@@ -145,6 +162,54 @@ export class ChromeProtocol {
 			};
 			this.waiters.add(rejectWaiter);
 		});
+	}
+
+	/** The first matching terminal owns completion; cancellation or socket close removes both listeners. */
+	waitForNetworkTerminal(requestId: string): {
+		readonly completed: Promise<NetworkTerminalMethod>;
+		readonly cancel: () => void;
+	} {
+		const matches = (parameters: unknown): boolean =>
+			networkRequestIdentitySchema.safeParse(parameters).data?.requestId === requestId;
+		const recorded = networkTerminalMethods
+			.flatMap((method) =>
+				(this.history.get(method) ?? [])
+					.filter((event) => matches(event.parameters))
+					.map((event) => ({ method, sequence: event.sequence })),
+			)
+			.toSorted((left, right) => left.sequence - right.sequence)[0];
+		if (recorded !== undefined)
+			return { completed: Promise.resolve(recorded.method), cancel: (): void => {} };
+		if (this.ended !== null)
+			return { completed: Promise.reject(this.ended), cancel: (): void => {} };
+		const result = Promise.withResolvers<NetworkTerminalMethod>();
+		const unsubscribe: (() => void)[] = [];
+		let pending = true;
+		const cleanup = (): void => {
+			for (const remove of unsubscribe) remove();
+			this.waiters.delete(rejectWaiter);
+		};
+		const rejectWaiter = (reason: Error): void => {
+			if (!pending) return;
+			pending = false;
+			cleanup();
+			result.reject(reason);
+		};
+		for (const method of networkTerminalMethods) {
+			unsubscribe.push(
+				this.on(method, (parameters): void => {
+					if (!pending || !matches(parameters)) return;
+					pending = false;
+					cleanup();
+					result.resolve(method);
+				}),
+			);
+		}
+		this.waiters.add(rejectWaiter);
+		return {
+			completed: result.promise,
+			cancel: (): void => rejectWaiter(new Error('Network terminal wait cancelled')),
+		};
 	}
 
 	disconnect(): void {
@@ -219,14 +284,20 @@ async function readDevToolsEndpoint(
 }
 
 /** A fresh, headless instance with a private profile and dynamic debug port; never touches a user's browser. */
-export async function startHeadlessChrome(evidence: string): Promise<{
+export async function startHeadlessChrome(
+	evidence: string,
+	observeAwait: NativeAwaitObserver = executeNativeAwait,
+	observeCleanup: NativeAwaitObserver = executeNativeAwait,
+): Promise<{
 	readonly page: ChromeProtocol;
 	readonly browser: ChromeProtocol;
 	readonly pid: number;
 	readonly close: () => Promise<void>;
 }> {
 	const profile = path.join(evidence, 'chrome-profile');
-	await mkdir(profile, { mode: 0o700 });
+	await observeAwait('Chrome launch: private profile creation', () =>
+		mkdir(profile, { mode: 0o700 }),
+	);
 	const child = spawn(
 		z
 			.string()
@@ -250,24 +321,42 @@ export async function startHeadlessChrome(evidence: string): Promise<{
 	let browser: ChromeProtocol | undefined;
 	let page: ChromeProtocol | undefined;
 	async function close(): Promise<void> {
-		if (child.exitCode === null && browser !== undefined) {
+		const failures: unknown[] = [];
+		const closingBrowser = browser;
+		if (child.exitCode === null && closingBrowser !== undefined) {
 			try {
-				await browser.call('Browser.close', {}, emptyResult);
-			} catch {
-				/* Browser closes its socket before acknowledging. */
+				await observeCleanup('Chrome close: Browser.close reply', async (): Promise<void> => {
+					try {
+						await closingBrowser.call('Browser.close', {}, emptyResult);
+					} catch {
+						/* Browser closes its socket before acknowledging. */
+					}
+				});
+			} catch (error) {
+				failures.push(error);
 			}
 		}
 		page?.disconnect();
 		browser?.disconnect();
-		if (child.exitCode !== null || child.signalCode !== null) return;
-		// Ends on Chrome's exit, or at once when the signal can't be sent: no real-time bound (R33).
-		await new Promise<void>((resolve, reject): void => {
-			child.once('exit', (): void => resolve());
-			if (!child.kill('SIGTERM')) reject(new Error('Cannot stop owned Chrome'));
-		});
+		if (child.exitCode === null && child.signalCode === null) {
+			// Arm exit and attempt the original signal even if checkpoint storage rejects.
+			const exited = new Promise<void>((resolve, reject): void => {
+				child.once('exit', (): void => resolve());
+				if (!child.kill('SIGTERM')) reject(new Error('Cannot stop owned Chrome'));
+			});
+			void exited.catch(() => undefined);
+			try {
+				await observeCleanup('Chrome close: child exit', () => exited);
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1)
+			throw new AggregateError(failures, 'Chrome close checkpoints failed', { cause: failures[0] });
 	}
 	try {
-		const [endpoint] = await Promise.all([
+		const starting = Promise.all([
 			readDevToolsEndpoint(child, evidence),
 			writeFile(
 				path.join(evidence, 'chrome-process.json'),
@@ -275,29 +364,60 @@ export async function startHeadlessChrome(evidence: string): Promise<{
 				{ mode: 0o600 },
 			),
 		]);
-		browser = await ChromeProtocol.connect(
-			`ws://127.0.0.1:${endpoint.port}${endpoint.browserPath}`,
+		void starting.catch(() => undefined);
+		const [endpoint] = await observeAwait(
+			'Chrome launch: DevTools endpoint and process record',
+			() => starting,
 		);
-		await browser.call('Target.setDiscoverTargets', { discover: true }, emptyResult);
-		const targets = await browser.call('Target.getTargets', {}, targetsSchema);
+		const browserConnection = await observeNativeAcquisition(
+			observeAwait,
+			'Chrome launch: browser WebSocket open',
+			() => ChromeProtocol.connect(`ws://127.0.0.1:${endpoint.port}${endpoint.browserPath}`),
+			(connection): void => {
+				browser = connection;
+			},
+		);
+		browser = browserConnection;
+		await observeAwait('Chrome launch: target discovery reply', () =>
+			browserConnection.call('Target.setDiscoverTargets', { discover: true }, emptyResult),
+		);
+		const targets = await observeAwait('Chrome launch: target list reply', () =>
+			browserConnection.call('Target.getTargets', {}, targetsSchema),
+		);
 		let target = targets.targetInfos.find((candidate) => candidate.type === 'page');
 		if (target === undefined) {
-			const event = await browser.waitFor('Target.targetCreated', (value): boolean => {
-				const parsed = targetEventSchema.safeParse(value);
-				return parsed.success && parsed.data.targetInfo.type === 'page';
-			});
+			const event = await observeAwait('Chrome launch: page targetCreated event', () =>
+				browserConnection.waitFor('Target.targetCreated', (value): boolean => {
+					const parsed = targetEventSchema.safeParse(value);
+					return parsed.success && parsed.data.targetInfo.type === 'page';
+				}),
+			);
 			target = targetEventSchema.parse(event).targetInfo;
 		}
+		const pageList = await observeAwait('Chrome launch: page endpoint HTTP response', () =>
+			fetch(`http://127.0.0.1:${endpoint.port}/json/list`),
+		);
 		const pages = pageTargetsSchema.parse(
-			await (await fetch(`http://127.0.0.1:${endpoint.port}/json/list`)).json(),
+			await observeAwait('Chrome launch: page endpoint response body', () => pageList.json()),
 		);
 		const url = pages.find((candidate) => candidate.id === target.targetId)?.webSocketDebuggerUrl;
 		if (url === undefined) throw new Error('Owned Chrome page target missing');
-		page = await ChromeProtocol.connect(url);
+		page = await observeNativeAcquisition(
+			observeAwait,
+			'Chrome launch: page WebSocket open',
+			() => ChromeProtocol.connect(url),
+			(connection): void => {
+				page = connection;
+			},
+		);
 		if (child.pid === undefined) throw new Error('Owned Chrome PID missing');
 		return { page, browser, pid: child.pid, close };
 	} catch (error) {
-		await close();
-		throw error;
+		return withNativeBrowserCleanup(
+			async (): Promise<never> => {
+				throw error;
+			},
+			() => observeCleanup('Chrome launch: failed-launch cleanup', () => close()),
+		);
 	}
 }

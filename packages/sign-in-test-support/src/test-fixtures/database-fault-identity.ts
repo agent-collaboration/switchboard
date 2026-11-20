@@ -2,6 +2,17 @@ import { z } from 'zod';
 
 export const databaseFaultSchema = z.strictObject({
 	operation: z.enum(['insert', 'update', 'delete', 'select']),
+	projection: z
+		.enum([
+			'membership-facts',
+			'membership-invitations',
+			'people-members',
+			'people-count',
+			'people-invitations',
+			'memberships',
+		])
+		.optional(),
+	once: z.boolean().optional(),
 	table: z.enum([
 		'user',
 		'session',
@@ -43,6 +54,31 @@ export function matchesDatabaseFault(call: PreparedDriverCall, fault: DatabaseFa
 		(fault.phase === undefined || contains(fault.phase)) &&
 		(fault.changeKind === undefined || contains(fault.changeKind)) &&
 		(fault.auditKind === undefined || contains(fault.auditKind)) &&
-		(fault.column === undefined || call.query.includes(`"${fault.column}" =`))
+		(fault.column === undefined || call.query.includes(`"${fault.column}" =`)) &&
+		(fault.projection === undefined || organizationReadProjection(call) === fault.projection)
 	);
+}
+
+/** The projection identifies the production select without counting unrelated permission reads. */
+export function organizationReadProjection(
+	call: PreparedDriverCall,
+): DatabaseFault['projection'] | null {
+	const query = call.query.replaceAll(/\s+/gu, ' ').trim();
+	if (!/^select\b/iu.test(query)) return null;
+	if (query.startsWith('select "member"."role" from "member" inner join "user"'))
+		return 'membership-facts';
+	if (query.startsWith('select "user"."name", "user"."email", "member"."role" from "member"'))
+		return 'people-members';
+	if (query.startsWith('select count(*) from "member"')) return 'people-count';
+	if (query.startsWith('select "id", "status", "expiresAt", "email", "role" from "invitation"'))
+		return 'people-invitations';
+	if (query.startsWith('select "id", "status", "expiresAt" from "invitation"'))
+		return 'membership-invitations';
+	if (
+		query.startsWith(
+			'select "member"."organizationId", "organization"."name", "member"."userId", "member"."role" from "member"',
+		)
+	)
+		return 'memberships';
+	return null;
 }

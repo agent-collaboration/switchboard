@@ -31,8 +31,10 @@ export function renderOwnerPage(props: OwnerPageProps & { readonly nonce: PageNo
 			(props.factorPage !== undefined && props.factorPage !== 'hidden'
 				? passkeyPageScript() + factorFormScript()
 				: '') +
-			// Island roots exist on every page that shows a factor step or factor management.
-			(!props.ready || (props.factorPage !== undefined && props.factorPage !== 'hidden')
+			// Passkey sign-in, factor controls and membership choices share the island entry.
+			(!props.ready ||
+			(props.factorPage !== undefined && props.factorPage !== 'hidden') ||
+			(props.memberships?.length ?? 0) > 0
 				? signInPagesIslandScript
 				: '') +
 			(props.ready
