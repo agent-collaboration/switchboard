@@ -7,8 +7,7 @@
 	"author": "Shravan Sunder <ShravanSunder@users.noreply.github.com>",
 	"type": "module",
 	"imports": {
-		"#auth-owner-cli": "./packages/sign-in-owner-cli/src/owner-cli.ts",
-		"#auth-verification-cli": "./packages/sign-in-test-support/src/test-fixtures/auth-verification-cli.ts"
+		"#auth-owner-cli": "./packages/sign-in-owner-cli/src/owner-cli.ts"
 	},
 	"scripts": {
 		"build": "pnpm -r build",
@@ -43,7 +42,8 @@
 		"test:integration": "vitest run --config vitest.config.ts --project integration",
 		"test:e2e:host": "vitest run --config vitest.config.ts --project e2e-host",
 		"test:e2e": "tsx scripts/run-e2e-proof-lanes.ts",
-		"test:watch": "vitest"
+		"test:watch": "vitest",
+		"verify:sign-in": "tsx scripts/verify-auth/verify-auth.ts"
 	},
 	"devDependencies": {
 		"@types/node": "^25.6.2",
