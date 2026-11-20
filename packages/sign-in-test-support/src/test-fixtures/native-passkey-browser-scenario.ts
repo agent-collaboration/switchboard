@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,11 @@ import { startHeadlessChrome } from '#sign-in-test-support/test-fixtures/native-
 import type { NativeBrowserStep } from '#sign-in-test-support/test-fixtures/native-browser-scenario';
 import { loginThroughNativeOwnerCli } from '#sign-in-test-support/test-fixtures/native-cli-proof';
 import { observeNativePasskeyNoUserVerification } from '#sign-in-test-support/test-fixtures/native-passkey-no-user-verification';
+import {
+	createNativePasskeyRegistrationObservation,
+	registerNativePasskey,
+	type NativePasskeyRegistrationObservation,
+} from '#sign-in-test-support/test-fixtures/native-passkey-registration-observation';
 import { prepareNodeProofArtifacts } from '#sign-in-test-support/test-fixtures/node-proof-artifacts';
 import { prepareProofBundles } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 const execute = promisify(execFile);
@@ -81,6 +86,7 @@ export async function observeNativePasskeyBrowser(
 	let harness: Awaited<ReturnType<typeof startLocalAuthHarness>> | undefined;
 	let chrome: Awaited<ReturnType<typeof startHeadlessChrome>> | undefined;
 	let browser: NativeBrowserPage | undefined;
+	let registrationObservation: NativePasskeyRegistrationObservation | undefined;
 	let cleanupFailure: string | null = null;
 	let scenarioFailure: NativeBrowserFailure = { kind: 'none' };
 	async function phase(name: string): Promise<void> {
@@ -408,42 +414,30 @@ export async function observeNativePasskeyBrowser(
 		);
 		if (organization.response.status !== 200)
 			throw new Error('Native organization creation refused');
-		await observeAwait('registration: Add passkey readiness', () =>
+		await observeAwait('registration: document controls present', () =>
 			page.readyWhen(
 				"!!document.querySelector('#security-heading') && [...document.querySelectorAll('[data-sign-in-island] button')].some(button=>button.textContent.trim()==='Add passkey')",
 			),
 		);
 		activeStep = 'native-passkey-registration';
 
-		// A browser-side rejection (for example an IP RP ID) cannot emit a verify response.
-		const registrationError = page.evaluate(
-			`new Promise((resolve,reject)=>{const root=[...document.querySelectorAll('[data-sign-in-island]')].find(node=>JSON.parse(node.dataset.islandState).kind==='passkey-management');if(!root)throw new Error('Passkey management root missing');const inspect=()=>{const error=root.querySelector('[role="alert"]');if(error?.textContent?.trim())resolve(error.textContent.trim());};const observer=new MutationObserver(inspect);observer.observe(root,{childList:true,subtree:true,characterData:true});window.cancelPasskeyRegistrationObservation=()=>{observer.disconnect();reject(new Error('Registration observation cancelled'));};inspect();})`,
-			z.string(),
+		const registrationFile = path.join(evidence, 'registration-observation.jsonl');
+		await observeAwait('registration: observation file', () =>
+			writeFile(registrationFile, '', { mode: 0o600, flag: 'wx' }),
 		);
-		void registrationError.catch(() => undefined);
-		const registered = await withNativeBrowserCleanup(
-			() =>
-				observeAwait('registration: verify response or browser rejection', () =>
-					Promise.race([
-						page.responseTo('/api/auth/passkey/verify-registration', () =>
-							page.click('[data-sign-in-island] button', 'Add passkey'),
-						),
-						registrationError.then((message): never => {
-							throw new Error(
-								'Browser rejected registration before native verification: ' + message,
-							);
-						}),
-					]),
+		const currentRegistrationObservation = createNativePasskeyRegistrationObservation({
+			protocol,
+			issuer: target.issuer,
+			write: (entry) =>
+				appendFile(
+					registrationFile,
+					JSON.stringify({ sourceRevision, host, kind, ...entry }) + '\n',
+					{ mode: 0o600 },
 				),
-			() =>
-				observeCleanup('registration: cancel browser rejection observation', () =>
-					page.evaluate(
-						`(()=>{window.cancelPasskeyRegistrationObservation?.();delete window.cancelPasskeyRegistrationObservation;return true;})()`,
-						z.literal(true),
-						observeCleanup,
-					),
-				).then((): void => {}),
-		);
+		});
+		registrationObservation = currentRegistrationObservation;
+		await currentRegistrationObservation.install(page, observeAwait);
+		const registered = await registerNativePasskey({ page, observeAwait, observeCleanup });
 		if (registered.response.status !== 200)
 			throw new Error('Native virtual passkey registration refused');
 		await observeAwait('registration: verify response body', () => page.readBody(registered));
@@ -819,63 +813,69 @@ export async function observeNativePasskeyBrowser(
 						cause: closeFailures[0],
 					});
 			},
-			record: async (capture): Promise<void> => {
-				await progress?.finish();
-				let failureScreenshot: NativeBrowserStep['screenshot'];
-				if (capture !== undefined && failureBrowser !== undefined) {
-					try {
-						failureScreenshot = await failureBrowser.recordScreenshot('failure-state', capture);
-					} catch {
-						// Optional frame storage cannot replace the already-persisted deciding error.
-					}
-				}
-				const capturedFailure =
-					failureStep !== undefined && failureScreenshot !== undefined
-						? { ...failureStep, screenshot: failureScreenshot }
-						: undefined;
-				const completedSteps = steps.map((step) =>
-					step === failureStep && capturedFailure !== undefined ? capturedFailure : step,
-				);
-				await recordSteps(completedSteps);
-				await writeFile(
-					path.join(evidence, 'observation.json'),
-					JSON.stringify(
-						{
-							target: {
-								sourceRevision,
-								root,
-								executionHost: hostname(),
-								nodeVersion: process.version,
-							},
-							host,
-							kind,
-							layer: 'real Chrome/native Better Auth/selected storage',
-							steps: completedSteps,
-							statuses,
-							cleanupFailure,
-							chromePid: chrome?.pid ?? null,
-							standIns: [
-								'controlled provider',
-								'Turnstile script and siteverify',
-								'software TOTP authenticator',
-								'Chrome virtual WebAuthn authenticator',
-								'injected clock',
-								'central recording peer',
-							],
-							notCovered: [
-								'physical authenticators',
-								'real Turnstile',
-								'staging',
-								'real provider identity',
-								'invite UI',
-							],
-						},
-						null,
-						2,
-					),
-					{ mode: 0o600 },
-				);
-			},
+			record: (capture): Promise<void> =>
+				withNativeBrowserCleanup(
+					async (): Promise<void> => {
+						await progress?.finish();
+						let failureScreenshot: NativeBrowserStep['screenshot'];
+						if (capture !== undefined && failureBrowser !== undefined) {
+							try {
+								failureScreenshot = await failureBrowser.recordScreenshot('failure-state', capture);
+							} catch {
+								// Optional frame storage cannot replace the already-persisted deciding error.
+							}
+						}
+						const capturedFailure =
+							failureStep !== undefined && failureScreenshot !== undefined
+								? { ...failureStep, screenshot: failureScreenshot }
+								: undefined;
+						const completedSteps = steps.map((step) =>
+							step === failureStep && capturedFailure !== undefined ? capturedFailure : step,
+						);
+						await recordSteps(completedSteps);
+						await writeFile(
+							path.join(evidence, 'observation.json'),
+							JSON.stringify(
+								{
+									target: {
+										sourceRevision,
+										root,
+										executionHost: hostname(),
+										nodeVersion: process.version,
+									},
+									host,
+									kind,
+									layer: 'real Chrome/native Better Auth/selected storage',
+									steps: completedSteps,
+									statuses,
+									cleanupFailure,
+									chromePid: chrome?.pid ?? null,
+									standIns: [
+										'controlled provider',
+										'Turnstile script and siteverify',
+										'software TOTP authenticator',
+										'Chrome virtual WebAuthn authenticator',
+										'injected clock',
+										'central recording peer',
+									],
+									notCovered: [
+										'physical authenticators',
+										'real Turnstile',
+										'staging',
+										'real provider identity',
+										'invite UI',
+									],
+								},
+								null,
+								2,
+							),
+							{ mode: 0o600 },
+						);
+					},
+					async (): Promise<void> => {
+						await registrationObservation?.finish();
+					},
+				),
 		});
 	}
 }
