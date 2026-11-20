@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +12,29 @@ import { z } from 'zod';
 import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import { startLocalAuthHarness } from '#sign-in-test-support/test-fixtures/local-auth-harness';
 import {
+	finishNativeBrowserScenario,
+	withNativeBrowserCleanup,
+	type NativeBrowserFailure,
+} from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import {
 	NativeBrowserPage,
 	nativeNetworkResponseSchema,
 } from '#sign-in-test-support/test-fixtures/native-browser-page';
+import {
+	createNativeBrowserProgress,
+	executeNativeAwait,
+	observeNativeAcquisition,
+	type NativeAwaitObserver,
+} from '#sign-in-test-support/test-fixtures/native-browser-progress';
 import { startHeadlessChrome } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
 import type { NativeBrowserStep } from '#sign-in-test-support/test-fixtures/native-browser-scenario';
 import { loginThroughNativeOwnerCli } from '#sign-in-test-support/test-fixtures/native-cli-proof';
+import { observeNativePasskeyNoUserVerification } from '#sign-in-test-support/test-fixtures/native-passkey-no-user-verification';
+import {
+	createNativePasskeyRegistrationObservation,
+	registerNativePasskey,
+	type NativePasskeyRegistrationObservation,
+} from '#sign-in-test-support/test-fixtures/native-passkey-registration-observation';
 import { prepareNodeProofArtifacts } from '#sign-in-test-support/test-fixtures/node-proof-artifacts';
 import { prepareProofBundles } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 const execute = promisify(execFile);
@@ -44,12 +61,34 @@ export async function observeNativePasskeyBrowser(
 		node: process.env.AUTH_PROOF_NODE_MANIFEST_FILE,
 	};
 	const steps: NativeBrowserStep[] = [];
+	const progress =
+		kind === 'no-user-verification'
+			? createNativeBrowserProgress({
+					steps: () => steps,
+					write: (snapshot) =>
+						writeFile(path.join(evidence, 'steps.json'), JSON.stringify(snapshot, null, 2), {
+							mode: 0o600,
+						}),
+				})
+			: undefined;
+	const observeAwait: NativeAwaitObserver = progress?.observe ?? executeNativeAwait;
+	const observeCleanup: NativeAwaitObserver = progress?.observeCleanup ?? executeNativeAwait;
+	function recordSteps(snapshot: readonly NativeBrowserStep[] = steps): Promise<void> {
+		return (
+			progress?.recordSteps(snapshot) ??
+			writeFile(path.join(evidence, 'steps.json'), JSON.stringify(snapshot, null, 2), {
+				mode: 0o600,
+			})
+		);
+	}
 	const statuses: { readonly pathname: string; readonly status: number }[] = [];
 	let activeStep = 'prepare';
 	let harness: Awaited<ReturnType<typeof startLocalAuthHarness>> | undefined;
 	let chrome: Awaited<ReturnType<typeof startHeadlessChrome>> | undefined;
 	let browser: NativeBrowserPage | undefined;
+	let registrationObservation: NativePasskeyRegistrationObservation | undefined;
 	let cleanupFailure: string | null = null;
+	let scenarioFailure: NativeBrowserFailure = { kind: 'none' };
 	async function phase(name: string): Promise<void> {
 		activeStep = name;
 		await writeFile(
@@ -66,75 +105,118 @@ export async function observeNativePasskeyBrowser(
 		facts: Readonly<Record<string, unknown>>,
 		capture = false,
 	): Promise<void> {
+		const currentBrowser = browser;
 		steps.push({
 			name,
 			status: 'passed',
 			facts,
-			...(capture && browser !== undefined ? { screenshot: await browser.screenshot(name) } : {}),
+			...(capture && currentBrowser !== undefined
+				? {
+						screenshot: await observeAwait('passed: normal screenshot', () =>
+							currentBrowser.screenshot(name),
+						),
+					}
+				: {}),
 		});
-		await writeFile(path.join(evidence, 'steps.json'), JSON.stringify(steps, null, 2), {
-			mode: 0o600,
-		});
+		await observeAwait('passed: steps record', () => recordSteps());
 	}
 	try {
 		process.env.SIGN_IN_TEST_HOST = host;
 		const manifestFile = path.join(evidence, 'bundle-manifest.json');
-		await writeFile(manifestFile, JSON.stringify(await prepareProofBundles(root, evidence)), {
-			mode: 0o600,
-			flag: 'wx',
-		});
+		const workerManifest = await observeAwait('setup: Worker proof preparation', () =>
+			prepareProofBundles(root, evidence),
+		);
+		await observeAwait('setup: Worker manifest handoff', () =>
+			writeFile(manifestFile, JSON.stringify(workerManifest), {
+				mode: 0o600,
+				flag: 'wx',
+			}),
+		);
 		process.env.AUTH_PROOF_MANIFEST_FILE = manifestFile;
 		if (host === 'node') {
 			const file = path.join(evidence, 'node-manifest.json');
-			await writeFile(file, JSON.stringify(await prepareNodeProofArtifacts(root, evidence)), {
-				mode: 0o600,
-				flag: 'wx',
-			});
+			const nodeManifest = await observeAwait('setup: Node proof preparation', () =>
+				prepareNodeProofArtifacts(root, evidence),
+			);
+			await observeAwait('setup: Node manifest handoff', () =>
+				writeFile(file, JSON.stringify(nodeManifest), {
+					mode: 0o600,
+					flag: 'wx',
+				}),
+			);
 			process.env.AUTH_PROOF_NODE_MANIFEST_FILE = file;
 		} else delete process.env.AUTH_PROOF_NODE_MANIFEST_FILE;
-		harness = await startLocalAuthHarness({
-			turnstileSecret: 'published-test',
-			issuerHostname: 'localhost',
-		});
+		harness = await observeNativeAcquisition(
+			observeAwait,
+			'setup: auth harness and Node listener startup',
+			() =>
+				startLocalAuthHarness({
+					turnstileSecret: 'published-test',
+					issuerHostname: 'localhost',
+				}),
+			(acquired): void => {
+				harness = acquired;
+			},
+		);
 		const target = harness;
-		chrome = await startHeadlessChrome(evidence);
-		const protocol = chrome.page;
-		browser = new NativeBrowserPage(protocol, evidence);
+		chrome = await observeNativeAcquisition(
+			observeAwait,
+			'setup: Chrome launch',
+			() => startHeadlessChrome(evidence, observeAwait, observeCleanup),
+			(acquired): void => {
+				chrome = acquired;
+			},
+		);
+		const runningChrome = chrome;
+		const protocol = runningChrome.page;
+		browser = new NativeBrowserPage(protocol, evidence, observeAwait);
 		const page = browser;
-		const version = await chrome.browser.call(
-			'Browser.getVersion',
-			{},
-			z.object({
-				product: z.string(),
-				revision: z.string(),
-				protocolVersion: z.string(),
-				userAgent: z.string(),
-				jsVersion: z.string(),
+		const version = await observeAwait('setup: browser identity reply', () =>
+			runningChrome.browser.call(
+				'Browser.getVersion',
+				{},
+				z.object({
+					product: z.string(),
+					revision: z.string(),
+					protocolVersion: z.string(),
+					userAgent: z.string(),
+					jsVersion: z.string(),
+				}),
+			),
+		);
+		await observeAwait('setup: browser identity record', () =>
+			writeFile(path.join(evidence, 'browser-version.json'), JSON.stringify(version), {
+				mode: 0o600,
 			}),
 		);
-		await writeFile(path.join(evidence, 'browser-version.json'), JSON.stringify(version), {
-			mode: 0o600,
-		});
-		await Promise.all(
-			['Page.enable', 'Runtime.enable', 'Log.enable'].map((method) =>
-				protocol.call(method, {}, empty),
+		await observeAwait('setup: Page Runtime and Log enable replies', () =>
+			Promise.all(
+				['Page.enable', 'Runtime.enable', 'Log.enable'].map((method) =>
+					protocol.call(method, {}, empty),
+				),
 			),
 		);
 		// Preserve the original native response body across success navigation; no response is replaced.
-		await protocol.call(
-			'Network.enable',
-			{
-				enableDurableMessages: true,
-				maxTotalBufferSize: 16_777_216,
-				maxResourceBufferSize: 8_388_608,
-			},
-			empty,
+		await observeAwait('setup: durable Network enable reply', () =>
+			protocol.call(
+				'Network.enable',
+				{
+					enableDurableMessages: true,
+					maxTotalBufferSize: 16_777_216,
+					maxResourceBufferSize: 8_388_608,
+				},
+				empty,
+			),
 		);
-		await protocol.call('Network.setCacheDisabled', { cacheDisabled: true }, empty);
-		await protocol.call(
-			'Emulation.setDeviceMetricsOverride',
-			{ width: 400, height: 844, deviceScaleFactor: 1, mobile: true },
-			empty,
+		await observeAwait('setup: disable cache reply', () =>
+			protocol.call('Network.setCacheDisabled', { cacheDisabled: true }, empty),
+		);
+		await observeAwait('setup: mobile metrics reply', () =>
+			protocol.call(
+				'Emulation.setDeviceMetricsOverride',
+				{ width: 400, height: 844, deviceScaleFactor: 1, mobile: true },
+				empty,
+			),
 		);
 		const responseBodies: string[] = [];
 		const responsePaths = new Map<string, string>();
@@ -199,32 +281,38 @@ export async function observeNativePasskeyBrowser(
 					error instanceof Error ? error : new Error('Turnstile script interception failed');
 			});
 		});
-		await protocol.call(
-			'Fetch.enable',
-			{
-				patterns: [
-					{
-						urlPattern: 'https://challenges.cloudflare.com/turnstile/v0/api.js*',
-						requestStage: 'Request',
-					},
-				],
-			},
-			empty,
-		);
-		await protocol.call('WebAuthn.enable', {}, empty);
-		const authenticator = await protocol.call(
-			'WebAuthn.addVirtualAuthenticator',
-			{
-				options: {
-					protocol: 'ctap2',
-					transport: 'internal',
-					hasResidentKey: true,
-					hasUserVerification: true,
-					isUserVerified: true,
-					automaticPresenceSimulation: true,
+		await observeAwait('setup: Fetch interception enable reply', () =>
+			protocol.call(
+				'Fetch.enable',
+				{
+					patterns: [
+						{
+							urlPattern: 'https://challenges.cloudflare.com/turnstile/v0/api.js*',
+							requestStage: 'Request',
+						},
+					],
 				},
-			},
-			z.object({ authenticatorId: z.string() }),
+				empty,
+			),
+		);
+		await observeAwait('setup: WebAuthn enable reply', () =>
+			protocol.call('WebAuthn.enable', {}, empty),
+		);
+		const authenticator = await observeAwait('setup: virtual authenticator reply', () =>
+			protocol.call(
+				'WebAuthn.addVirtualAuthenticator',
+				{
+					options: {
+						protocol: 'ctap2',
+						transport: 'internal',
+						hasResidentKey: true,
+						hasUserVerification: true,
+						isUserVerified: true,
+						automaticPresenceSimulation: true,
+					},
+				},
+				z.object({ authenticatorId: z.string() }),
+			),
 		);
 		let challengeCount = 0;
 		protocol.on('Network.requestWillBeSent', (value): void => {
@@ -237,9 +325,8 @@ export async function observeNativePasskeyBrowser(
 				challengeCount += 1;
 		});
 		async function challengeAccepted(action: () => Promise<void>): Promise<void> {
-			const response = await page.responseTo(
-				'/api/auth/passkey/generate-authenticate-options',
-				action,
+			const response = await observeAwait('passkey challenge: action and options response', () =>
+				page.responseTo('/api/auth/passkey/generate-authenticate-options', action),
 			);
 			if (response.response.status !== 200)
 				throw new Error(
@@ -247,25 +334,35 @@ export async function observeNativePasskeyBrowser(
 				);
 		}
 		activeStep = 'native-social-session';
-		await page.navigate(target.issuer + '/sign-in');
+		await observeAwait('social session: first sign-in navigation', () =>
+			page.navigate(target.issuer + '/sign-in'),
+		);
 		const captcha = target.turnstile.issueToken({
 			action: 'sign_in_social',
 			hostname: new URL(target.issuer).hostname,
 			verdict: 'accepted',
 		});
-		const started = await page.evaluate(
-			`fetch('/api/auth/sign-in/social',{method:'POST',headers:{'content-type':'application/json','x-captcha-response':${JSON.stringify(captcha)}},body:JSON.stringify({provider:'google',callbackURL:location.origin+'/owner-ready'})}).then(async response=>({status:response.status,body:await response.json()}))`,
-			z.object({ status: z.literal(200), body: z.object({ url: z.url() }) }),
+		const started = await observeAwait('social session: social-start fetch and JSON', () =>
+			page.evaluate(
+				`fetch('/api/auth/sign-in/social',{method:'POST',headers:{'content-type':'application/json','x-captcha-response':${JSON.stringify(captcha)}},body:JSON.stringify({provider:'google',callbackURL:location.origin+'/owner-ready'})}).then(async response=>({status:response.status,body:await response.json()}))`,
+				z.object({ status: z.literal(200), body: z.object({ url: z.url() }) }),
+			),
 		);
-		await page.navigate(
-			target.providerCallback('google', new URL(started.body.url), email, true).toString(),
+		await observeAwait('social session: callback navigation', () =>
+			page.navigate(
+				target.providerCallback('google', new URL(started.body.url), email, true).toString(),
+			),
 		);
-		await page.readyWhen(
-			"[...document.querySelectorAll('[data-sign-in-island] button')].some(button=>button.textContent.includes('Set up authenticator app'))",
+		await observeAwait('enrollment: setup button readiness', () =>
+			page.readyWhen(
+				"[...document.querySelectorAll('[data-sign-in-island] button')].some(button=>button.textContent.includes('Set up authenticator app'))",
+			),
 		);
 		activeStep = 'native-app-enrollment';
-		const enrollmentResponse = await page.responseTo('/api/auth/two-factor/enable', () =>
-			page.click('[data-sign-in-island] button', 'Set up authenticator app'),
+		const enrollmentResponse = await observeAwait('enrollment: enable response', () =>
+			page.responseTo('/api/auth/two-factor/enable', () =>
+				page.click('[data-sign-in-island] button', 'Set up authenticator app'),
+			),
 		);
 		if (enrollmentResponse.response.status !== 200) throw new Error('Native enrollment refused');
 		const enrollment = z
@@ -274,94 +371,120 @@ export async function observeNativePasskeyBrowser(
 				totpURI: z.string(),
 				backupCodes: z.array(z.string()).min(1),
 			})
-			.parse(await page.readBody(enrollmentResponse));
+			.parse(
+				await observeAwait('enrollment: enable body', () => page.readBody(enrollmentResponse)),
+			);
 		target.totpAuthenticator.observeEnrollment(email, enrollment);
-		await page.readyWhen('document.querySelectorAll(\'[data-slot="input-otp-slot"]\').length===6');
-		const confirmed = await page.responseTo('/api/auth/two-factor/verify-totp', async () =>
-			page.enter(
-				'input[autocomplete="one-time-code"]',
-				await target.totpAuthenticator.currentCode(email),
+		await observeAwait('enrollment: OTP input readiness', () =>
+			page.readyWhen('document.querySelectorAll(\'[data-slot="input-otp-slot"]\').length===6'),
+		);
+		const confirmed = await observeAwait('enrollment: OTP verify response', () =>
+			page.responseTo('/api/auth/two-factor/verify-totp', async () =>
+				page.enter(
+					'input[autocomplete="one-time-code"]',
+					await observeAwait('enrollment: current TOTP code', () =>
+						target.totpAuthenticator.currentCode(email),
+					),
+				),
 			),
 		);
 		if (confirmed.response.status !== 200) throw new Error('Native app confirmation refused');
-		await page.readyWhen(
-			"[...document.querySelectorAll('button')].some(button=>button.textContent.includes(\"I've saved my recovery codes\"))",
+		await observeAwait('enrollment: recovery acknowledgment readiness', () =>
+			page.readyWhen(
+				"[...document.querySelectorAll('button')].some(button=>button.textContent.includes(\"I've saved my recovery codes\"))",
+			),
 		);
-		await page.afterNavigation('/owner-ready', () =>
-			page.click('[data-sign-in-island] button', "I've saved my recovery codes"),
-		);
-		await page.readyWhen("!!document.querySelector('#create-organization')");
-		await page.enter('input[name="organizationName"]', 'Passkey browser organization');
-		const organization = await page.responseTo('/api/auth/organization/create', () =>
+		await observeAwait('enrollment: recovery acknowledgment navigation', () =>
 			page.afterNavigation('/owner-ready', () =>
-				page.click('#create-organization button[type="submit"]'),
+				page.click('[data-sign-in-island] button', "I've saved my recovery codes"),
+			),
+		);
+		await observeAwait('organization: creation form readiness', () =>
+			page.readyWhen("!!document.querySelector('#create-organization')"),
+		);
+		await observeAwait('organization: name input', () =>
+			page.enter('input[name="organizationName"]', 'Passkey browser organization'),
+		);
+		const organization = await observeAwait('organization: creation response and navigation', () =>
+			page.responseTo('/api/auth/organization/create', () =>
+				page.afterNavigation('/owner-ready', () =>
+					page.click('#create-organization button[type="submit"]'),
+				),
 			),
 		);
 		if (organization.response.status !== 200)
 			throw new Error('Native organization creation refused');
-		await page.readyWhen(
-			"!!document.querySelector('#security-heading') && [...document.querySelectorAll('[data-sign-in-island] button')].some(button=>button.textContent.trim()==='Add passkey')",
+		await observeAwait('registration: document controls present', () =>
+			page.readyWhen(
+				"!!document.querySelector('#security-heading') && [...document.querySelectorAll('[data-sign-in-island] button')].some(button=>button.textContent.trim()==='Add passkey')",
+			),
 		);
 		activeStep = 'native-passkey-registration';
 
-		// A browser-side rejection (for example an IP RP ID) cannot emit a verify response.
-		const registrationError = page.evaluate(
-			`new Promise((resolve,reject)=>{const root=[...document.querySelectorAll('[data-sign-in-island]')].find(node=>JSON.parse(node.dataset.islandState).kind==='passkey-management');if(!root)throw new Error('Passkey management root missing');const inspect=()=>{const error=root.querySelector('[role="alert"]');if(error?.textContent?.trim())resolve(error.textContent.trim());};const observer=new MutationObserver(inspect);observer.observe(root,{childList:true,subtree:true,characterData:true});window.cancelPasskeyRegistrationObservation=()=>{observer.disconnect();reject(new Error('Registration observation cancelled'));};inspect();})`,
-			z.string(),
+		const registrationFile = path.join(evidence, 'registration-observation.jsonl');
+		await observeAwait('registration: observation file', () =>
+			writeFile(registrationFile, '', { mode: 0o600, flag: 'wx' }),
 		);
-		void registrationError.catch(() => undefined);
-		const registered = await (async (): Promise<z.infer<typeof nativeNetworkResponseSchema>> => {
-			try {
-				return await Promise.race([
-					page.responseTo('/api/auth/passkey/verify-registration', () =>
-						page.click('[data-sign-in-island] button', 'Add passkey'),
-					),
-					registrationError.then((message): never => {
-						throw new Error('Browser rejected registration before native verification: ' + message);
-					}),
-				]);
-			} finally {
-				await page.evaluate(
-					`(()=>{window.cancelPasskeyRegistrationObservation?.();delete window.cancelPasskeyRegistrationObservation;return true;})()`,
-					z.literal(true),
-				);
-			}
-		})();
+		const currentRegistrationObservation = createNativePasskeyRegistrationObservation({
+			protocol,
+			issuer: target.issuer,
+			write: (entry) =>
+				appendFile(
+					registrationFile,
+					JSON.stringify({ sourceRevision, host, kind, ...entry }) + '\n',
+					{ mode: 0o600 },
+				),
+		});
+		registrationObservation = currentRegistrationObservation;
+		await currentRegistrationObservation.install(page, observeAwait);
+		const registered = await registerNativePasskey({ page, observeAwait, observeCleanup });
 		if (registered.response.status !== 200)
 			throw new Error('Native virtual passkey registration refused');
-		await page.readBody(registered);
-		await passed(activeStep, {
-			origin: target.issuer,
-			registrationStatus: 200,
-			authenticator: 'Chrome virtual CTAP2 internal resident UV',
-		});
+		await observeAwait('registration: verify response body', () => page.readBody(registered));
+		await observeAwait('registration: passed evidence', () =>
+			passed(activeStep, {
+				origin: target.issuer,
+				registrationStatus: 200,
+				authenticator: 'Chrome virtual CTAP2 internal resident UV',
+			}),
+		);
 		if (kind === 'cli-login')
 			await page.evaluate(
 				"fetch('/api/auth/owner/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(response=>{if(!response.ok)throw new Error('Owner bootstrap refused');return true;})",
 				z.literal(true),
 			);
-		await protocol.call('Network.clearBrowserCookies', {}, empty);
+		await observeAwait('setup: clear browser cookies reply', () =>
+			protocol.call('Network.clearBrowserCookies', {}, empty),
+		);
 		scriptShouldFail = kind === 'script-failure';
 		activeStep = `passkey-${kind}`;
 		async function signInPage(url: string): Promise<void> {
 			const before = challengeCount;
-			await page.navigate(url);
-			await page.evaluate(
-				"(()=>{const roots=[...document.querySelectorAll('[data-sign-in-island]')];return roots.some(root=>JSON.parse(root.dataset.islandState).kind==='passkey-sign-in')&&!!document.querySelector('#sign-in-passkey-captcha');})()",
-				z.literal(true),
+			await observeAwait('passkey sign-in: navigation', () => page.navigate(url));
+			await observeAwait('passkey sign-in: island and captcha assertion', () =>
+				page.evaluate(
+					"(()=>{const roots=[...document.querySelectorAll('[data-sign-in-island]')];return roots.some(root=>JSON.parse(root.dataset.islandState).kind==='passkey-sign-in')&&!!document.querySelector('#sign-in-passkey-captcha');})()",
+					z.literal(true),
+				),
 			);
-			await page.readyWhen(
-				"[...document.querySelectorAll('[data-sign-in-island] button')].some(button=>button.textContent.trim()==='Continue with Passkey')",
+			await observeAwait('passkey sign-in: button readiness', () =>
+				page.readyWhen(
+					"[...document.querySelectorAll('[data-sign-in-island] button')].some(button=>button.textContent.trim()==='Continue with Passkey')",
+				),
 			);
-			await page.evaluate(
-				'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))',
-				z.literal(true),
+			await observeAwait('passkey sign-in: two animation frames', () =>
+				page.evaluate(
+					'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))',
+					z.literal(true),
+				),
 			);
 			if (challengeCount !== before)
 				throw new Error('Click-only page load sent a passkey challenge');
-			const edges = await page.evaluate(
-				"[...document.querySelectorAll('#owner-sign-in button')].map(button=>button.getBoundingClientRect().left)",
-				z.array(z.number()).min(3),
+			const edges = await observeAwait('passkey sign-in: button alignment measurement', () =>
+				page.evaluate(
+					"[...document.querySelectorAll('#owner-sign-in button')].map(button=>button.getBoundingClientRect().left)",
+					z.array(z.number()).min(3),
+				),
 			);
 			if (edges.some((edge) => Math.abs(edge - (edges[0] ?? 0)) > 1))
 				throw new Error('Passkey/social buttons are not aligned at400px');
@@ -438,38 +561,18 @@ export async function observeNativePasskeyBrowser(
 				break;
 			}
 			case 'no-user-verification': {
-				await signInPage(target.issuer + '/sign-in');
-				await protocol.call(
-					'WebAuthn.setResponseOverrideBits',
-					{ authenticatorId: authenticator.authenticatorId, isBadUV: true },
-					empty,
-				);
-				const refusal = await page.responseTo('/api/auth/passkey/verify-authentication', () =>
-					challengeAccepted(() =>
-						page.click('[data-sign-in-island] button', 'Continue with Passkey'),
-					),
-				);
-				if (refusal.response.status !== 401)
-					throw new Error(`No-UV verify status ${refusal.response.status}`);
-				z.object({ code: z.literal('USER_VERIFICATION_REQUIRED') }).parse(
-					await page.readBody(refusal),
-				);
-				await page.readyWhen(
-					"location.pathname==='/sign-in' && !!document.querySelector('[data-sonner-toast]') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Continue with Passkey'&&!button.disabled)",
-				);
-				await page.evaluate(
-					"fetch('/api/auth/get-session').then(response=>response.json()).then(session=>{if(session!==null)throw new Error('No-UV session exists');return true;})",
-					z.literal(true),
-				);
-				await protocol.call(
-					'WebAuthn.setResponseOverrideBits',
-					{ authenticatorId: authenticator.authenticatorId, isBadUV: false },
-					empty,
-				);
-				await passed(
-					activeStep,
-					{ status: 401, code: 'USER_VERIFICATION_REQUIRED', notice: true, signedOut: true },
-					true,
+				await observeAwait('passkey no-UV: refusal scenario', () =>
+					observeNativePasskeyNoUserVerification({
+						page,
+						protocol,
+						authenticatorId: authenticator.authenticatorId,
+						issuer: target.issuer,
+						activeStep,
+						signInPage,
+						challengeAccepted,
+						passed,
+						observeAwait,
+					}),
 				);
 				break;
 			}
@@ -646,78 +749,133 @@ export async function observeNativePasskeyBrowser(
 		}
 		if (scriptFailure !== null) throw scriptFailure;
 		if (
-			(await execute('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim() !== sourceRevision
+			(
+				await observeAwait('passkey final: source revision check', () =>
+					execute('git', ['rev-parse', 'HEAD'], { cwd: root }),
+				)
+			).stdout.trim() !== sourceRevision
 		)
 			throw new Error('Passkey source changed during run');
 	} catch (error) {
-		let screenshot: NativeBrowserStep['screenshot'];
-		try {
-			if (browser !== undefined) screenshot = await browser.screenshot('failure-state');
-		} catch {
-			/* Preserve deciding failure. */
-		}
-		steps.push({
-			name: activeStep,
-			status: 'failed',
-			facts: { message: error instanceof Error ? error.message : 'Unknown passkey failure' },
-			...(screenshot === undefined ? {} : { screenshot }),
-		});
-		throw error;
+		scenarioFailure = { kind: 'failed', error };
 	} finally {
-		try {
-			await chrome?.close();
-		} catch (error) {
-			cleanupFailure = error instanceof Error ? error.message : 'Chrome cleanup failed';
-		}
-		try {
-			await harness?.close();
-		} catch (error) {
-			cleanupFailure = error instanceof Error ? error.message : 'Harness cleanup failed';
-		}
-		for (const [name, value] of Object.entries({
-			SIGN_IN_TEST_HOST: previous.host,
-			AUTH_PROOF_MANIFEST_FILE: previous.manifest,
-			AUTH_PROOF_NODE_MANIFEST_FILE: previous.node,
-		})) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
-		await writeFile(path.join(evidence, 'steps.json'), JSON.stringify(steps, null, 2), {
-			mode: 0o600,
+		const failureStep: NativeBrowserStep | undefined =
+			scenarioFailure.kind === 'failed'
+				? {
+						name: activeStep,
+						status: 'failed',
+						facts: {
+							message:
+								scenarioFailure.error instanceof Error
+									? scenarioFailure.error.message
+									: 'Unknown passkey failure',
+						},
+					}
+				: undefined;
+		const failureBrowser = browser;
+		await finishNativeBrowserScenario({
+			failure: scenarioFailure,
+			recordFailure: async (): Promise<void> => {
+				if (failureStep === undefined) return;
+				steps.push(failureStep);
+				await recordSteps();
+			},
+			...(failureBrowser === undefined
+				? {}
+				: { captureFailure: () => failureBrowser.captureFailureFrame() }),
+			close: async (): Promise<void> => {
+				const closeFailures: unknown[] = [];
+				try {
+					await observeCleanup('cleanup: Chrome close', async () => chrome?.close());
+				} catch (error) {
+					cleanupFailure = error instanceof Error ? error.message : 'Chrome cleanup failed';
+					closeFailures.push(error);
+				}
+				try {
+					await observeCleanup('cleanup: harness close and receipt export', async () =>
+						harness?.close(),
+					);
+				} catch (error) {
+					cleanupFailure = error instanceof Error ? error.message : 'Harness cleanup failed';
+					closeFailures.push(error);
+				}
+				for (const [name, value] of Object.entries({
+					SIGN_IN_TEST_HOST: previous.host,
+					AUTH_PROOF_MANIFEST_FILE: previous.manifest,
+					AUTH_PROOF_NODE_MANIFEST_FILE: previous.node,
+				})) {
+					if (value === undefined) delete process.env[name];
+					else process.env[name] = value;
+				}
+				if (closeFailures.length === 1) throw closeFailures[0];
+				if (closeFailures.length > 1)
+					throw new AggregateError(closeFailures, 'Native browser cleanup failed', {
+						cause: closeFailures[0],
+					});
+			},
+			record: (capture): Promise<void> =>
+				withNativeBrowserCleanup(
+					async (): Promise<void> => {
+						await progress?.finish();
+						let failureScreenshot: NativeBrowserStep['screenshot'];
+						if (capture !== undefined && failureBrowser !== undefined) {
+							try {
+								failureScreenshot = await failureBrowser.recordScreenshot('failure-state', capture);
+							} catch {
+								// Optional frame storage cannot replace the already-persisted deciding error.
+							}
+						}
+						const capturedFailure =
+							failureStep !== undefined && failureScreenshot !== undefined
+								? { ...failureStep, screenshot: failureScreenshot }
+								: undefined;
+						const completedSteps = steps.map((step) =>
+							step === failureStep && capturedFailure !== undefined ? capturedFailure : step,
+						);
+						await recordSteps(completedSteps);
+						await writeFile(
+							path.join(evidence, 'observation.json'),
+							JSON.stringify(
+								{
+									target: {
+										sourceRevision,
+										root,
+										executionHost: hostname(),
+										nodeVersion: process.version,
+									},
+									host,
+									kind,
+									layer: 'real Chrome/native Better Auth/selected storage',
+									steps: completedSteps,
+									statuses,
+									cleanupFailure,
+									chromePid: chrome?.pid ?? null,
+									standIns: [
+										'controlled provider',
+										'Turnstile script and siteverify',
+										'software TOTP authenticator',
+										'Chrome virtual WebAuthn authenticator',
+										'injected clock',
+										'central recording peer',
+									],
+									notCovered: [
+										'physical authenticators',
+										'real Turnstile',
+										'staging',
+										'real provider identity',
+										'invite UI',
+									],
+								},
+								null,
+								2,
+							),
+							{ mode: 0o600 },
+						);
+					},
+					async (): Promise<void> => {
+						await registrationObservation?.finish();
+					},
+				),
 		});
-		await writeFile(
-			path.join(evidence, 'observation.json'),
-			JSON.stringify(
-				{
-					target: { sourceRevision, root, executionHost: hostname(), nodeVersion: process.version },
-					host,
-					kind,
-					layer: 'real Chrome/native Better Auth/selected storage',
-					steps,
-					statuses,
-					cleanupFailure,
-					chromePid: chrome?.pid ?? null,
-					standIns: [
-						'controlled provider',
-						'Turnstile script and siteverify',
-						'software TOTP authenticator',
-						'Chrome virtual WebAuthn authenticator',
-						'injected clock',
-						'central recording peer',
-					],
-					notCovered: [
-						'physical authenticators',
-						'real Turnstile',
-						'staging',
-						'real provider identity',
-						'invite UI',
-					],
-				},
-				null,
-				2,
-			),
-			{ mode: 0o600 },
-		);
 	}
-	if (cleanupFailure !== null) throw new Error(cleanupFailure);
 }

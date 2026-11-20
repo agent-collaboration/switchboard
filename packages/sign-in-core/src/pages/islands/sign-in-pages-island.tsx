@@ -26,7 +26,16 @@ import type * as React from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 
+import type {
+	OrganizationPeopleListRequest,
+	OrganizationPersonLookupRequest,
+} from '#sign-in-core/contracts/organization-membership';
+import {
+	OrganizationPeople,
+	type OrganizationPeopleTransport,
+} from '#sign-in-core/pages/islands/organization-people';
 import { attachPasskeySignInTurnstile } from '#sign-in-core/pages/islands/passkey-sign-in-turnstile';
+import { PersonOrganizationChoice } from '#sign-in-core/pages/islands/person-organization-choice';
 import {
 	signInIslandAttribute,
 	signInIslandStateSchema,
@@ -38,6 +47,32 @@ const authClient = createAuthClient({
 	fetchOptions: { onRequest: attachPasskeySignInTurnstile },
 });
 const queryClient = new QueryClient();
+
+/** Stable across island renders so another island mounting cannot restart a pending read. */
+const organizationPeopleTransport: OrganizationPeopleTransport = {
+	list: async (request: OrganizationPeopleListRequest): Promise<unknown> => {
+		let reply: unknown;
+		await authClient.$fetch<unknown>('/organization/people-list', {
+			method: 'GET',
+			query: request,
+			onResponse: async ({ response }): Promise<void> => {
+				reply = await response.clone().json();
+			},
+		});
+		return reply;
+	},
+	lookup: async (request: OrganizationPersonLookupRequest): Promise<unknown> => {
+		let reply: unknown;
+		await authClient.$fetch<unknown>('/organization/person-membership', {
+			method: 'POST',
+			body: request,
+			onResponse: async ({ response }): Promise<void> => {
+				reply = await response.clone().json();
+			},
+		});
+		return reply;
+	},
+};
 
 /** The sign-in service's audited passkey removal route (not Better Auth's delete). */
 async function removePasskey(passkeyId: string): Promise<void> {
@@ -94,6 +129,22 @@ function SignInPageContent({ state }: { readonly state: SignInIslandState }): Re
 					}}
 				/>
 			);
+		case 'person-organization-choice':
+			return (
+				<PersonOrganizationChoice
+					choices={state.choices}
+					activeOrganizationId={state.activeOrganizationId}
+				/>
+			);
+		case 'organization-people':
+			return (
+				<OrganizationPeople
+					key={state.organizationId}
+					organizationId={state.organizationId}
+					organizationName={state.organizationName}
+					transport={organizationPeopleTransport}
+				/>
+			);
 		case 'passkey-management':
 			return (
 				<PasskeyManager
@@ -123,8 +174,10 @@ function SignInPageContent({ state }: { readonly state: SignInIslandState }): Re
 					</CardContent>
 				</Card>
 			);
-		default:
-			return state satisfies never;
+		default: {
+			const unhandled = state satisfies never;
+			throw new Error(`Unhandled sign-in island state: ${JSON.stringify(unhandled)}`);
+		}
 	}
 }
 

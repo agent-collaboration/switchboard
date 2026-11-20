@@ -11,8 +11,13 @@ import { agentRegistrationMetadataSchema } from '#sign-in-core/agent-clients/age
 import { workspaceResourceHasIssuancePolicy } from '#sign-in-core/agent-clients/workspace-resource';
 import { authorizationFencedAdapter } from '#sign-in-core/better-auth/authorization-fenced-adapter';
 import { signInJwtOptions } from '#sign-in-core/better-auth/native-jwt-options';
+import { createOrganizationMembershipReadPlugin } from '#sign-in-core/better-auth/organization-membership-read-plugin';
 import { createOrganizationProviderPlugin } from '#sign-in-core/better-auth/organization-provider-options';
 import { createOrganizationProvisioningPlugin } from '#sign-in-core/better-auth/organization-provisioning-plugin';
+import {
+	organizationReadSessionBeforeHook,
+	isOrganizationMembershipReadPath,
+} from '#sign-in-core/better-auth/organization-read-session';
 import { createOrganizationStatementPlugin } from '#sign-in-core/better-auth/organization-statement-plugin';
 import { createPasskeyConfirmationPlugin } from '#sign-in-core/better-auth/passkey-confirmation-plugin';
 import { personAccessTokenClaims } from '#sign-in-core/better-auth/person-access-token-claims';
@@ -74,6 +79,7 @@ type SignInProviderOptions = BetterAuthOptions & {
 		ReturnType<typeof oauthProvider>,
 		ReturnType<typeof passkey>,
 		ReturnType<typeof createOrganizationProviderPlugin>,
+		ReturnType<typeof createOrganizationMembershipReadPlugin>,
 		ReturnType<typeof twoFactor>,
 		ReturnType<typeof createSecondFactorProviderPlugin>,
 		ReturnType<typeof createPasskeyConfirmationPlugin>,
@@ -225,8 +231,11 @@ export function createSignInProvider(props: SignInProviderProps): SignInProvider
 				async (
 					context,
 				): Promise<void | {
-					readonly context: { readonly context: { readonly session: LiveOwnerSession } };
+					readonly context: { readonly context: { readonly session: LiveOwnerSession | null } };
 				}> => {
+					if (isOrganizationMembershipReadPath(context.path)) {
+						return organizationReadSessionBeforeHook(context);
+					}
 					if (context.path?.startsWith('/organization/')) {
 						const current = await getSessionFromCtx(context, { disableCookieCache: true });
 						if (current !== null && current.user.emailVerified) {
@@ -465,6 +474,7 @@ export function createSignInProvider(props: SignInProviderProps): SignInProvider
 				requestState: props.requestState,
 				signStatement,
 			}),
+			createOrganizationMembershipReadPlugin({ store: props.store, platform: props.platform }),
 			twoFactor({ allowPasswordless: true }),
 			createSecondFactorProviderPlugin({ store: props.store, platform: props.platform }),
 			createPasskeyConfirmationPlugin({

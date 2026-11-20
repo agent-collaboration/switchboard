@@ -10,9 +10,19 @@ const offeredPluginRoutes = [
 	'/api/auth/organization/accept-invitation',
 	'/api/auth/organization/remove-member',
 	'/api/auth/organization/set-active',
+	'/api/auth/organization/person-membership',
 ] as const;
 
 describe('the organization plugin public surface', () => {
+	it.each(['self-context', 'people-list', 'people'])(
+		'admits only GET for the scoped %s read',
+		(route) => {
+			const pathname = `/api/auth/organization/${route}`;
+			expect(isPublicSignInRoute(pathname, 'GET')).toBe(true);
+			for (const method of ['POST', 'PUT', 'DELETE', 'PATCH'])
+				expect(isPublicSignInRoute(pathname, method)).toBe(false);
+		},
+	);
 	it.each(offeredPluginRoutes)('admits only POST for %s', (pathname) => {
 		// Arrange / Act / Assert: the existing deny-by-default route fence owns dispatch.
 		expect(isPublicSignInRoute(pathname, 'POST')).toBe(true);

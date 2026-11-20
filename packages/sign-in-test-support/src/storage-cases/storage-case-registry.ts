@@ -5,6 +5,7 @@ import { organizationCentralEmptyCases } from '#sign-in-test-support/storage-cas
 import { organizationCentralForgotCases } from '#sign-in-test-support/storage-cases/organization-central-forgot-cases';
 import { organizationFleetCallCases } from '#sign-in-test-support/storage-cases/organization-fleet-call-cases';
 import { heldOwnerRemoval } from '#sign-in-test-support/storage-cases/organization-held-removal';
+import { organizationMembershipReadCases } from '#sign-in-test-support/storage-cases/organization-membership-read-cases';
 import { organizationPermissionConfirmations } from '#sign-in-test-support/storage-cases/organization-permission-cases';
 import { nativeOrganizationProvisioning } from '#sign-in-test-support/storage-cases/organization-provisioning-cases';
 import { organizationRecordFaultCases } from '#sign-in-test-support/storage-cases/organization-record-fault-cases';
@@ -35,6 +36,7 @@ export interface StorageCaseDefinition {
 	readonly run: (context: StorageCaseContext) => Promise<unknown>;
 }
 export const storageCaseDefinitions: readonly StorageCaseDefinition[] = [
+	...organizationMembershipReadCases,
 	...secondFactorRemovalCases,
 	{
 		name: 'people: native recovery uses the adapter compare-and-swap boundary so exactly one held request spends a code',

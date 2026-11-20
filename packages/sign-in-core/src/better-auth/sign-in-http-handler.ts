@@ -25,6 +25,7 @@ import {
 	createOrganizationFleetCallGuard,
 	createOrganizationFleetCallRunner,
 } from '#sign-in-core/better-auth/organization-fleet-call-guard';
+import { readNativeOrganizationSessionView } from '#sign-in-core/better-auth/organization-read-session';
 import { bootstrapOwnerClient } from '#sign-in-core/better-auth/owner-client-bootstrap';
 import { completePasskeySignIn } from '#sign-in-core/better-auth/passkey-sign-in-completion';
 import {
@@ -42,14 +43,17 @@ import {
 	workspaceResourcePorts,
 	requireStoredValue,
 } from '#sign-in-core/better-auth/store-result-adapters';
+import type { OrganizationChoice } from '#sign-in-core/contracts/organization-membership';
 import { uuid7Schema } from '#sign-in-core/contracts/sign-in-platform';
 import { runAuthorizationRevisionDrain } from '#sign-in-core/organizations/authorization-revision-drainer';
 import type { OrganizationFleetState } from '#sign-in-core/organizations/organization-provisioning';
+import { readPersonOrganizationContext } from '#sign-in-core/organizations/person-organization-context';
 import { pageAssetResponse } from '#sign-in-core/pages/page-document';
 import {
 	admitSignInRequest,
 	providerLimitedResponse,
 } from '#sign-in-core/request-limits/sign-in-request-admission';
+import { organizationReadResponse } from '#sign-in-core/response-release/organization-request-errors';
 import {
 	handleSignInRequest,
 	isPublicSignInRoute,
@@ -59,8 +63,7 @@ import {
 	type SignInResponseReleasePorts,
 } from '#sign-in-core/response-release/sign-in-response-release';
 import { decideRecentSecondFactor } from '#sign-in-core/second-factors/second-factor-step-up';
-import { personIdSchema } from '#sign-in-core/storage/models/sign-in-store';
-import type { OrganizationMembership } from '#sign-in-core/storage/organization-membership-store';
+import { personIdSchema, type OrganizationId } from '#sign-in-core/storage/models/sign-in-store';
 
 export type SignInHttpConfiguration = Omit<
 	SignInProviderProps,
@@ -157,10 +160,25 @@ export function createSignInHttpHandler(
 			await configuration.store.organizations.membershipsForPerson(current.personId),
 		).find((candidate) => candidate.organizationId === current.activeOrganizationId);
 		if (membership === undefined) return seeOther('/owner-ready');
+		let showPeopleLink = false;
+		try {
+			showPeopleLink = (
+				await provider.api.hasPermission({
+					headers: request.headers,
+					body: {
+						organizationId: membership.organizationId,
+						permissions: { organization: ['view'] },
+					},
+				})
+			).success;
+		} catch {
+			// A failed read hides only the link; the People page keeps its own guard.
+		}
 		return organizationAdminPage({
 			organizationId: membership.organizationId,
 			organizationName: membership.organizationName,
 			operationId: configuration.platform.ids.nextId(),
+			showPeopleLink,
 		});
 	}
 	async function respondToSignInRequest(
@@ -228,10 +246,9 @@ export function createSignInHttpHandler(
 					| { readonly organizationId: string; readonly state: OrganizationFleetState }
 					| undefined;
 				let factorPage: FactorPageState = 'hidden';
-				let organizationChoices: readonly Pick<
-					OrganizationMembership,
-					'organizationId' | 'organizationName' | 'role'
-				>[] = [];
+				let memberships: readonly OrganizationChoice[] = [];
+				let activeOrganizationId: OrganizationId | null = null;
+				let selectionRequired = false;
 				if (url.pathname === '/owner-ready') {
 					const auth = createSignInProvider({
 						...configuration,
@@ -240,16 +257,20 @@ export function createSignInHttpHandler(
 					});
 					const current = await auth.api.getSession({
 						headers: request.headers,
-						query: { disableCookieCache: true },
+						query: { disableCookieCache: true, disableRefresh: true },
 					});
+					const organizationContext = await readPersonOrganizationContext({
+						session: readNativeOrganizationSessionView(current),
+						store: configuration.store.organizations,
+					});
+					if (organizationContext.kind === 'unavailable')
+						throw new Error('Organization context unavailable');
+					if (organizationContext.kind === 'available') {
+						memberships = organizationContext.choices;
+						activeOrganizationId = organizationContext.activeOrganizationId;
+						selectionRequired = memberships.length >= 2 && activeOrganizationId === null;
+					}
 					if (current !== null && current.user.emailVerified) {
-						const activeOrganizationId =
-							'activeOrganizationId' in current.session
-								? current.session.activeOrganizationId
-								: null;
-						const memberships = requireStoredValue(
-							await configuration.store.organizations.membershipsForPerson(current.user.id),
-						);
 						const selected = memberships.find(
 							(membership) => membership.organizationId === activeOrganizationId,
 						);
@@ -263,17 +284,6 @@ export function createSignInHttpHandler(
 						createOrganization =
 							current.user.email.toLowerCase() ===
 								configuration.configuration.ownerEmail.toLowerCase() && memberships.length === 0;
-						if (
-							memberships.length > 1 &&
-							!memberships.some((membership) => membership.organizationId === activeOrganizationId)
-						)
-							organizationChoices = memberships.map(
-								({ organizationId, organizationName, role }) => ({
-									organizationId,
-									organizationName,
-									role,
-								}),
-							);
 						const factors = requireStoredValue(
 							await configuration.store.factors.readSession(
 								personIdSchema.parse(current.user.id),
@@ -294,7 +304,9 @@ export function createSignInHttpHandler(
 				}
 				return minimalOwnerPage({
 					crypto: configuration.platform.crypto,
-					organizationChoices,
+					memberships,
+					activeOrganizationId,
+					selectionRequired,
 					...(organizationSetup === undefined ? {} : { organizationSetup }),
 					factorPage,
 					createOrganization,
@@ -441,9 +453,12 @@ export function createSignInHttpHandler(
 						method: 'passkey',
 					}),
 				]);
-			return Response.json(
-				{ error: 'sign-in-unavailable' },
-				{ status: 503, headers: { 'cache-control': 'no-store' } },
+			return organizationReadResponse(
+				incomingRequest,
+				Response.json(
+					{ error: 'sign-in-unavailable' },
+					{ status: 503, headers: { 'cache-control': 'no-store' } },
+				),
 			);
 		}
 	}

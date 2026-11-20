@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { uuid7Schema } from '#sign-in-core/contracts/sign-in-platform';
 import type { SignInStoreResult } from '#sign-in-core/storage/models/sign-in-database';
+import { organizationIdSchema } from '#sign-in-core/storage/models/sign-in-store';
 
 export const storedUserSchema = z.object({
 	id: uuid7Schema,
@@ -21,7 +22,7 @@ export const storedSessionSchema = z.object({
 	updatedAt: z.date(),
 	ipAddress: z.string().nullable(),
 	userAgent: z.string().nullable(),
-	activeOrganizationId: z.string().nullable(),
+	activeOrganizationId: organizationIdSchema.nullable(),
 });
 export const liveOwnerSessionSchema = z.object({
 	session: storedSessionSchema,
