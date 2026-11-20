@@ -14,7 +14,6 @@ import {
 	organizationBrowserCookie,
 	organizationDomReady,
 	observeOrganizationEnterGesture,
-	pressOrganizationBrowserKey,
 	tabToOrganizationControl,
 } from '#sign-in-test-support/test-fixtures/organization-browser-transport';
 
@@ -43,7 +42,7 @@ async function currentSession(context: OrganizationBrowserScenario): Promise<{
 	readonly secondFactorMethod: string | null;
 }> {
 	const browser = await readCurrentBrowserSession({
-		cookie: await organizationBrowserCookie(context.protocol, context.harness.issuer),
+		cookie: await organizationBrowserCookie(context.page, context.harness.issuer),
 		database: context.harness.database,
 	});
 	const rows = await context.harness.database
@@ -92,7 +91,7 @@ async function chooseOrganization(
 export async function exerciseOrganizationChooser(
 	context: OrganizationBrowserScenario,
 ): Promise<void> {
-	const { harness, page, protocol, responses } = context;
+	const { harness, page, responses } = context;
 	// Fresh native social login is setup, with the controlled provider and real Better Auth session.
 	harness.clearBrowserSession();
 	const initiated = await harness.auth('/api/auth/sign-in/social', {
@@ -117,7 +116,7 @@ export async function exerciseOrganizationChooser(
 	expect(admitted.status).toBe(302);
 	await harness.totpAuthenticator.ensureConfirmed('owner@example.invalid', harness.auth);
 	await installOrganizationBrowserCookie({
-		protocol,
+		page,
 		issuer: harness.issuer,
 		cookie: harness.cookie(),
 	});
@@ -128,6 +127,7 @@ export async function exerciseOrganizationChooser(
 	const token = await loginThroughNativeOwnerCli({
 		target: harness.target,
 		repositoryRoot: context.root,
+		cancelBrowser: () => page.cancel('Delivered CLI ended before chooser completion'),
 		browser: async (initialUrl: string): Promise<readonly string[]> => {
 			// Enter with the native session arranged above. Sign-in-page navigation is outside V2.
 			const ownerReady = new URL(initialUrl);
@@ -155,7 +155,6 @@ export async function exerciseOrganizationChooser(
 			expect(choices.toLowerCase()).toContain('owner');
 			await tabToOrganizationControl({
 				page,
-				protocol,
 				selector: `#choose-organization button[aria-label="Choose ${context.firstOrganizationName}"]`,
 			});
 			const firstReply = await page.responseTo(switchPath, async (): Promise<void> =>
@@ -167,7 +166,7 @@ export async function exerciseOrganizationChooser(
 						page,
 						buttonSelector: `#choose-organization button[value="${context.firstOrganizationId}"]`,
 						formSelector: '#choose-organization',
-						pressEnter: (): Promise<void> => pressOrganizationBrowserKey(protocol, 'Enter'),
+						pressEnter: (): Promise<void> => page.page.keyboard.press('Enter'),
 					});
 					recordChooserPhase('first-gesture', 'completed');
 					process.stdout.write(
@@ -238,7 +237,7 @@ export async function exerciseOrganizationChooser(
 			expect(new URL(callback).hostname).toBe('127.0.0.1');
 			return [
 				new URL(callback).searchParams.get('code') ?? '',
-				await organizationBrowserCookie(protocol, harness.issuer),
+				await organizationBrowserCookie(page, harness.issuer),
 			];
 		},
 	});

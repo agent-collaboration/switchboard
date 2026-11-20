@@ -16,7 +16,6 @@ import {
 	controlledSignInClock,
 	controlledSignInIds,
 } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
-import { nativeNetworkResponseSchema } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import type { OrganizationBrowserScenario } from '#sign-in-test-support/test-fixtures/organization-browser-scenario';
 import {
 	installOrganizationBrowserCookie,
@@ -28,6 +27,7 @@ import {
 	signInConfirmedPeopleBrowser,
 	signInPeopleBrowser,
 } from '#sign-in-test-support/test-fixtures/people-browser-login';
+import { nativeNetworkResponseSchema } from '#sign-in-test-support/test-fixtures/playwright-network';
 
 const lookupPath = '/api/auth/organization/person-membership';
 const listPath = '/api/auth/organization/people-list';
@@ -76,7 +76,7 @@ async function memberEmails(context: OrganizationBrowserScenario): Promise<reado
 export async function exerciseOrganizationPeople(
 	context: OrganizationBrowserScenario,
 ): Promise<void> {
-	const { harness, page, protocol, responses } = context;
+	const { harness, page, responses } = context;
 	const ownerCookie = harness.cookie();
 	expect(
 		(
@@ -196,7 +196,7 @@ export async function exerciseOrganizationPeople(
 			z.array(z.array(z.string())),
 		),
 	).toEqual([['browser-invited@example.invalid', 'Member', 'Invited']]);
-	await tabToOrganizationControl({ page, protocol, selector: 'button', label: 'Next' });
+	await tabToOrganizationControl({ page, selector: 'button', label: 'Next' });
 	await page.click('button', 'Next');
 	await organizationDomReady(
 		page,
@@ -341,13 +341,12 @@ export async function exerciseOrganizationPeople(
 	expect(page100Held.responseStatusCode).toBe(200);
 	expect(page100Held.networkId).not.toBe(page50Held.networkId);
 	// Arm for this exact held request before either response is released.
-	const page100Response = protocol.waitFor('Network.responseReceived', (value): boolean => {
+	const page100Response = page.network.armResponse((value): boolean => {
 		const parsed = nativeNetworkResponseSchema.safeParse(value);
 		if (!parsed.success || parsed.data.requestId !== page100Held.networkId) return false;
 		const responseUrl = new URL(parsed.data.response.url);
 		return responseUrl.pathname === listPath && responseUrl.searchParams.get('offset') === '100';
 	});
-	void page100Response.catch(() => undefined);
 	const olderPageEmail = expected[50]?.email;
 	if (olderPageEmail === undefined) throw new Error('Page-50 fixture absent');
 	await page.evaluate(
@@ -373,7 +372,7 @@ export async function exerciseOrganizationPeople(
 		await page.evaluate('window.organizationListObserver.disconnect(); true', z.literal(true));
 		await responses.release(page100Held);
 	}
-	const page100 = nativeNetworkResponseSchema.parse(await page100Response);
+	const page100 = nativeNetworkResponseSchema.parse(await page100Response.completed);
 	expect(page100.requestId).toBe(page100Held.networkId);
 	expect(new URL(page100.response.url).searchParams.get('offset')).toBe('100');
 	await organizationDomReady(
@@ -396,11 +395,10 @@ export async function exerciseOrganizationPeople(
 		}),
 	);
 	expect(layout.headingCount).toBe(1);
-	await tabToOrganizationControl({ page, protocol, selector: lookupField });
-	await tabToOrganizationControl({ page, protocol, selector: 'button[type="submit"]' });
+	await tabToOrganizationControl({ page, selector: lookupField });
+	await tabToOrganizationControl({ page, selector: 'button[type="submit"]' });
 	await tabToOrganizationControl({
 		page,
-		protocol,
 		selector: 'button',
 		label: 'Previous',
 	});
@@ -441,7 +439,7 @@ export async function exerciseOrganizationPeople(
 		).status,
 	).toBe(200);
 	await installOrganizationBrowserCookie({
-		protocol,
+		page,
 		issuer: harness.issuer,
 		cookie: harness.cookie(),
 	});
@@ -452,14 +450,8 @@ export async function exerciseOrganizationPeople(
 			z.number(),
 		),
 	).toBe(0);
-	const denied = await page.responseTo('/api/auth/organization/people', async (): Promise<void> =>
-		page.afterNavigation('/api/auth/organization/people', async (): Promise<void> => {
-			await protocol.call(
-				'Page.navigate',
-				{ url: `${harness.issuer}${peoplePath}` },
-				z.object({}).passthrough(),
-			);
-		}),
+	const denied = await page.responseTo('/api/auth/organization/people', () =>
+		page.navigate(`${harness.issuer}${peoplePath}`),
 	);
 	expect(denied.response.status).toBe(403);
 	expect(

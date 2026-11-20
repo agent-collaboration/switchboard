@@ -16,19 +16,14 @@ import {
 	finishNativeBrowserScenario,
 	type NativeBrowserFailure,
 } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
-import {
-	NativeBrowserPage,
-	nativeNetworkResponseSchema,
-} from '#sign-in-test-support/test-fixtures/native-browser-page';
-import {
-	startHeadlessChrome,
-	type ChromeProtocol,
-} from '#sign-in-test-support/test-fixtures/native-browser-protocol';
-import { observeNativePasskeyBrowser } from '#sign-in-test-support/test-fixtures/native-passkey-browser-scenario';
 import { prepareNodeProofArtifacts } from '#sign-in-test-support/test-fixtures/node-proof-artifacts';
+import {
+	launchProofBrowser,
+	type PlaywrightBrowserPage,
+} from '#sign-in-test-support/test-fixtures/playwright-browser';
+import { nativeNetworkResponseSchema } from '#sign-in-test-support/test-fixtures/playwright-network';
 import { prepareProofBundles } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 
-const empty = z.object({}).passthrough();
 const initialMilliseconds = initialSignInTestTime;
 const email = 'owner@example.invalid';
 const execute = promisify(execFile);
@@ -43,7 +38,10 @@ export interface NativeBrowserStep {
 }
 
 /** The standard host lane owns the checkout and build; every run gets private evidence and state. */
-async function observeNativeFactorBrowser(host: 'node' | 'cloudflare'): Promise<void> {
+export async function observeNativeFactorBrowser(
+	host: 'node' | 'cloudflare',
+	scenarioSignal: AbortSignal,
+): Promise<void> {
 	const root = fileURLToPath(new URL('../../../../', import.meta.url));
 	const sourceRevision = (await execute('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
 	// A label only, from the controlled clock (R33); mkdtemp's suffix keeps each run private.
@@ -70,8 +68,8 @@ async function observeNativeFactorBrowser(host: 'node' | 'cloudflare'): Promise<
 	const steps: NativeBrowserStep[] = [];
 	let activeStep = 'prepare';
 	let harness: Awaited<ReturnType<typeof startLocalAuthHarness>> | undefined;
-	let chrome: Awaited<ReturnType<typeof startHeadlessChrome>> | undefined;
-	let browserPage: NativeBrowserPage | undefined;
+	let chrome: Awaited<ReturnType<typeof launchProofBrowser>> | undefined;
+	let browserPage: PlaywrightBrowserPage | undefined;
 	let cleanupFailure: string | null = null;
 	let scenarioFailure: NativeBrowserFailure = { kind: 'none' };
 	let appMilliseconds = initialMilliseconds;
@@ -116,39 +114,26 @@ async function observeNativeFactorBrowser(host: 'node' | 'cloudflare'): Promise<
 		} else delete process.env.AUTH_PROOF_NODE_MANIFEST_FILE;
 		harness = await startLocalAuthHarness({
 			turnstileSecret: 'published-test',
+			host,
 			authenticatorClock: { now: () => epochMillisecondsSchema.parse(appMilliseconds) },
 		});
 		const activeHarness = harness;
-		chrome = await startHeadlessChrome(evidence);
-		const browserVersion = await chrome.browser.call(
-			'Browser.getVersion',
-			{},
-			z.object({
-				protocolVersion: z.string(),
-				product: z.string(),
-				revision: z.string(),
-				userAgent: z.string(),
-				jsVersion: z.string(),
-			}),
-		);
+		chrome = await launchProofBrowser({
+			evidence,
+			origin: activeHarness.issuer,
+			width: 390,
+			scenarioSignal,
+		});
+		const page = chrome.protocol;
+		const browserVersion = await page.send('Browser.getVersion');
 		await writeFile(
 			path.join(evidence, 'browser-version.json'),
 			JSON.stringify(browserVersion, null, 2),
 			{ mode: 0o600, flag: 'wx' },
 		);
-		const page: ChromeProtocol = chrome.page;
-		browserPage = new NativeBrowserPage(page, evidence);
+		browserPage = chrome;
 		const activeBrowser = browserPage;
-		await Promise.all(
-			['Page.enable', 'Runtime.enable', 'Network.enable', 'Log.enable'].map((method) =>
-				page.call(method, {}, empty),
-			),
-		);
-		await page.call(
-			'Emulation.setDeviceMetricsOverride',
-			{ width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
-			empty,
-		);
+		await page.send('Log.enable');
 		page.on('Network.responseReceived', (value): void => {
 			const parsed = nativeNetworkResponseSchema.safeParse(value);
 			if (parsed.success && new URL(parsed.data.response.url).origin === activeHarness.issuer)
@@ -507,7 +492,9 @@ async function observeNativeFactorBrowser(host: 'node' | 'cloudflare'): Promise<
 							statuses,
 							consoleCounts,
 							cleanupFailure,
-							chromePid: chrome?.pid ?? null,
+							browserConnectedAfterClose: chrome?.isBrowserConnected() ?? null,
+							actualHarnessHost: harness?.signInHost ?? null,
+							harnessTeardown: harness?.teardownObservations.map((entry) => entry.kind) ?? [],
 							standIns: [
 								'controlled external provider and Turnstile siteverify for existing-session setup',
 								'software authenticator',
@@ -531,10 +518,4 @@ async function observeNativeFactorBrowser(host: 'node' | 'cloudflare'): Promise<
 			},
 		});
 	}
-}
-
-export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): Promise<void> {
-	await observeNativeFactorBrowser(host);
-	for (const kind of ['journey', 'no-user-verification', 'cli-login', 'script-failure'] as const)
-		await observeNativePasskeyBrowser(host, kind);
 }

@@ -143,6 +143,7 @@ export interface WorkerdCentralRuntime {
 export async function startLocalAuthHarness(
 	options: {
 		readonly turnstileSecret: 'published-test' | 'missing';
+		readonly host?: 'cloudflare' | 'node';
 		readonly issuerHostname?: 'localhost';
 		readonly siteVerify?: 'stand-in' | 'connection-refused';
 		readonly cloudflareClientAddress?: 'stable-browser' | 'absent';
@@ -168,6 +169,7 @@ export async function startLocalAuthHarness(
 ): Promise<
 	DatabaseProofControls & {
 		readonly miniflare: Miniflare;
+		readonly signInHost: 'cloudflare' | 'node';
 		readonly database: SignInDatabase;
 		readonly providerConfiguration: SignInHttpConfiguration | undefined;
 		readonly signInManagement: () => Promise<ReturnType<typeof createSignInManagementBinding>>;
@@ -239,7 +241,7 @@ export async function startLocalAuthHarness(
 	const proofRateLimitBindings = await loadProofRateLimitBindings(root);
 	const signInHost = z
 		.enum(['cloudflare', 'node'])
-		.parse(process.env.SIGN_IN_TEST_HOST ?? 'cloudflare');
+		.parse(options.host ?? process.env.SIGN_IN_TEST_HOST ?? 'cloudflare');
 	const centralProvisioning = createControlledCentralProvisioning();
 	let centralUnix: CentralLinkEndpoint | null = null;
 	let nodeHost: NodeAuthProofHost | undefined;
@@ -879,6 +881,7 @@ export async function startLocalAuthHarness(
 
 	return {
 		miniflare,
+		signInHost,
 		centralProvisioning,
 		centralAdmin,
 		setCentralAdminTime: (milliseconds: number): void => {

@@ -1,15 +1,11 @@
 import { z } from 'zod';
 
-import type { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import type { NativeAwaitObserver } from '#sign-in-test-support/test-fixtures/native-browser-progress';
-import type { ChromeProtocol } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
-
-const empty = z.object({}).passthrough();
+import type { PlaywrightBrowserPage } from '#sign-in-test-support/test-fixtures/playwright-browser';
 
 /** The native refusal retains the same challenge, response, notice and signed-out assertions. */
 export async function observeNativePasskeyNoUserVerification(props: {
-	readonly page: NativeBrowserPage;
-	readonly protocol: Pick<ChromeProtocol, 'call'>;
+	readonly page: PlaywrightBrowserPage;
 	readonly authenticatorId: string;
 	readonly issuer: string;
 	readonly activeStep: string;
@@ -24,7 +20,6 @@ export async function observeNativePasskeyNoUserVerification(props: {
 }): Promise<void> {
 	const {
 		page,
-		protocol,
 		authenticatorId,
 		issuer,
 		activeStep,
@@ -35,7 +30,7 @@ export async function observeNativePasskeyNoUserVerification(props: {
 	} = props;
 	await observeAwait('no-UV: sign-in page', () => signInPage(issuer + '/sign-in'));
 	await observeAwait('no-UV: set bad-UV response bit', () =>
-		protocol.call('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: true }, empty),
+		page.protocol.send('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: true }),
 	);
 	const refusal = await observeAwait('no-UV: challenge and verification response', () =>
 		page.responseTo('/api/auth/passkey/verify-authentication', () =>
@@ -59,7 +54,7 @@ export async function observeNativePasskeyNoUserVerification(props: {
 		),
 	);
 	await observeAwait('no-UV: reset bad-UV response bit', () =>
-		protocol.call('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: false }, empty),
+		page.protocol.send('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: false }),
 	);
 	await observeAwait('no-UV: passed evidence and normal screenshot', () =>
 		passed(

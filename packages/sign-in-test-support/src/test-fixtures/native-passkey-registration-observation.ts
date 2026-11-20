@@ -1,12 +1,9 @@
 import { z } from 'zod';
 
 import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
-import type {
-	NativeBrowserPage,
-	nativeNetworkResponseSchema,
-} from '#sign-in-test-support/test-fixtures/native-browser-page';
 import type { NativeAwaitObserver } from '#sign-in-test-support/test-fixtures/native-browser-progress';
-import type { ChromeProtocol } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import type { PlaywrightBrowserPage } from '#sign-in-test-support/test-fixtures/playwright-browser';
+import type { BrowserNetworkResponse } from '#sign-in-test-support/test-fixtures/playwright-network';
 
 export const nativePasskeyRegistrationReady =
 	"!!document.querySelector('#security-heading') && [...document.querySelectorAll('[data-sign-in-island][data-sign-in-island-mounted]')].some(root=>{try{return JSON.parse(root.dataset.islandState||'null')?.kind==='passkey-management'&&[...root.querySelectorAll('button')].some(button=>button.textContent.trim()==='Add passkey'&&!button.disabled);}catch{return false;}})";
@@ -55,7 +52,7 @@ export interface NativePasskeyRegistrationRecord {
 
 export interface NativePasskeyRegistrationObservation {
 	readonly install: (
-		page: Pick<NativeBrowserPage, 'evaluate'>,
+		page: Pick<PlaywrightBrowserPage, 'evaluate'>,
 		observe: NativeAwaitObserver,
 	) => Promise<void>;
 	readonly finish: () => Promise<void>;
@@ -98,9 +95,17 @@ globalThis.__nativePasskeyRegistrationObservation={ready:()=>state().ready};
 emit({kind:'installed'});changed();return true;
 })()`;
 
+export interface NativePasskeyRegistrationTransport {
+	readonly addBinding: () => Promise<void>;
+	readonly subscribe: (
+		event: 'Runtime.bindingCalled' | 'Network.requestWillBeSent' | 'Network.responseReceived',
+		listener: (value: unknown) => void,
+	) => () => void;
+}
+
 /** One owner serializes a private trace; finishing cannot await an uncompleted browser operation. */
 export function createNativePasskeyRegistrationObservation(props: {
-	readonly protocol: Pick<ChromeProtocol, 'call' | 'on'>;
+	readonly transport: NativePasskeyRegistrationTransport;
 	readonly issuer: string;
 	readonly write: (record: NativePasskeyRegistrationRecord) => Promise<void>;
 }): NativePasskeyRegistrationObservation {
@@ -135,7 +140,7 @@ export function createNativePasskeyRegistrationObservation(props: {
 		}
 	}
 	const subscriptions = [
-		props.protocol.on('Runtime.bindingCalled', (value): void => {
+		props.transport.subscribe('Runtime.bindingCalled', (value): void => {
 			const binding = z.object({ name: z.string(), payload: z.string() }).safeParse(value);
 			if (!binding.success || binding.data.name !== nativePasskeyRegistrationBinding) return;
 			try {
@@ -146,12 +151,12 @@ export function createNativePasskeyRegistrationObservation(props: {
 				if (failure.kind === 'none') failure = { kind: 'failed', error };
 			}
 		}),
-		props.protocol.on('Network.requestWillBeSent', (value): void => {
+		props.transport.subscribe('Network.requestWillBeSent', (value): void => {
 			const request = z.object({ request: z.object({ url: z.string() }) }).safeParse(value);
 			if (request.success && isOptions(request.data.request.url))
 				record({ kind: 'options-requested' });
 		}),
-		props.protocol.on('Network.responseReceived', (value): void => {
+		props.transport.subscribe('Network.responseReceived', (value): void => {
 			const response = z
 				.object({ response: z.object({ url: z.string(), status: z.number().int() }) })
 				.safeParse(value);
@@ -163,13 +168,7 @@ export function createNativePasskeyRegistrationObservation(props: {
 	return {
 		install: async (page, observe): Promise<void> => {
 			await drain();
-			await observe('registration: observation binding', () =>
-				props.protocol.call(
-					'Runtime.addBinding',
-					{ name: nativePasskeyRegistrationBinding },
-					z.object({}).passthrough(),
-				),
-			);
+			await observe('registration: observation binding', () => props.transport.addBinding());
 			await observe('registration: observation installation', () =>
 				page.evaluate(nativePasskeyRegistrationScript, z.literal(true)),
 			);
@@ -185,10 +184,10 @@ export function createNativePasskeyRegistrationObservation(props: {
 
 /** Wait for committed island controls, then resolve the control again through native input. */
 export async function registerNativePasskey(props: {
-	readonly page: NativeBrowserPage;
+	readonly page: PlaywrightBrowserPage;
 	readonly observeAwait: NativeAwaitObserver;
 	readonly observeCleanup: NativeAwaitObserver;
-}): Promise<z.infer<typeof nativeNetworkResponseSchema>> {
+}): Promise<BrowserNetworkResponse> {
 	const { page, observeAwait, observeCleanup } = props;
 	await observeAwait('registration: mounted island control readiness', () =>
 		page.readyWhen(nativePasskeyRegistrationReady),

@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import { recordAuthProofPhase } from '#sign-in-test-support/test-fixtures/auth-proof-phase-recording';
 import { controlledSignInIds } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
+import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
 import {
 	nativeOwnerCliProfileSchema,
 	type NativeOwnerCliProfile,
@@ -94,6 +95,7 @@ export async function loginThroughNativeOwnerCli(props: {
 	readonly repositoryRoot: string;
 	readonly browser: (url: string) => Promise<readonly string[]>;
 	readonly profile?: NativeOwnerCliProfile;
+	readonly cancelBrowser?: () => Promise<void>;
 }): Promise<string> {
 	const targetFile = path.join(path.dirname(props.target.tokenCachePath), 'owner-cli-target.json');
 	await writeFile(targetFile, JSON.stringify(props.target), { mode: 0o600 });
@@ -134,6 +136,8 @@ export async function loginThroughNativeOwnerCli(props: {
 	const browserCompletion = Promise.withResolvers<void>();
 	void browserCompletion.promise.catch(() => undefined);
 	let browserStarted = false;
+	let browserSettled = false;
+	const childClosed = Promise.withResolvers<void>();
 	const safeLines = new Set([
 		...ownerLoginFailureLines,
 		'Owner management credential ready. Each command still checks the live session.',
@@ -141,8 +145,9 @@ export async function loginThroughNativeOwnerCli(props: {
 	const ending = new Promise<number>((resolveEnd, rejectEnd) => {
 		child.once('error', rejectEnd);
 		child.once('close', (exitCode, signal) => {
+			childClosed.resolve();
 			process.stderr.write(
-				`${JSON.stringify({ event: 'native-owner-login-result', exitCode, signal, output: output.filter((line) => safeLines.has(line)).slice(0, 32), discardedLines: output.filter((line) => !safeLines.has(line)).length })}\n`,
+				`${JSON.stringify({ event: 'native-owner-login-result', pid: child.pid, exitCode, signal, output: output.filter((line) => safeLines.has(line)).slice(0, 32), discardedLines: output.filter((line) => !safeLines.has(line)).length })}\n`,
 			);
 			if (exitCode !== 0 || signal !== null) {
 				const reason =
@@ -161,10 +166,17 @@ export async function loginThroughNativeOwnerCli(props: {
 			if (!line.startsWith('AUTHORIZATION_URL=')) continue;
 			if (browserStarted) throw new Error('Native owner CLI printed multiple authorization URLs');
 			browserStarted = true;
-			void props.browser(line.slice('AUTHORIZATION_URL='.length)).then((values) => {
-				sensitiveValues.push(...values);
-				browserCompletion.resolve();
-			}, browserCompletion.reject);
+			void props.browser(line.slice('AUTHORIZATION_URL='.length)).then(
+				(values) => {
+					sensitiveValues.push(...values);
+					browserSettled = true;
+					browserCompletion.resolve();
+				},
+				(error: unknown): void => {
+					browserSettled = true;
+					browserCompletion.reject(error);
+				},
+			);
 		}
 		if (!browserStarted) browserCompletion.resolve();
 	})();
@@ -173,19 +185,34 @@ export async function loginThroughNativeOwnerCli(props: {
 			output.push(line);
 		}
 	})();
-	try {
-		await Promise.all([ending, stdout, stderr, browserCompletion.promise]);
-		const cached = cachedOwnerTokenSchema.parse(
-			JSON.parse(await readFile(props.target.tokenCachePath, 'utf8')),
-		);
-		if (
-			output.some((line) =>
-				[cached.token, ...sensitiveValues].some((value) => value !== '' && line.includes(value)),
+	return withNativeBrowserCleanup(
+		async () => {
+			await Promise.all([ending, stdout, stderr, browserCompletion.promise]);
+			const cached = cachedOwnerTokenSchema.parse(
+				JSON.parse(await readFile(props.target.tokenCachePath, 'utf8')),
+			);
+			if (
+				output.some((line) =>
+					[cached.token, ...sensitiveValues].some((value) => value !== '' && line.includes(value)),
+				)
 			)
-		)
-			throw new Error('Delivered native CLI logged a captured credential or authorization code');
-		return cached.token;
-	} finally {
-		if (child.exitCode === null) child.kill('SIGTERM');
-	}
+				throw new Error('Delivered native CLI logged a captured credential or authorization code');
+			return cached.token;
+		},
+		async (): Promise<void> => {
+			await withNativeBrowserCleanup(
+				async (): Promise<void> => {
+					if (browserStarted && !browserSettled && props.cancelBrowser !== undefined) {
+						await props.cancelBrowser();
+						await browserCompletion.promise.catch(() => undefined);
+					}
+				},
+				async (): Promise<void> => {
+					if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+					await childClosed.promise;
+					await Promise.allSettled([stdout, stderr]);
+				},
+			);
+		},
+	);
 }
