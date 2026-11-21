@@ -18,7 +18,10 @@ export function renderOwnerPage(props: OwnerPageProps & { readonly nonce: PageNo
 	if (props.resume !== null) callback.searchParams.set('authorize', props.resume);
 	const document = pageDocument({
 		title: ownerPageTitle(pageProps),
-		children: React.createElement(OwnerPage, pageProps),
+		children: React.createElement(OwnerPage, {
+			...pageProps,
+			continueLocation: callback.pathname + callback.search,
+		}),
 		footer: OwnerPageFooter(pageProps),
 		nonce,
 		// Turnstile gates only the sign-in page; signed-in pages load no third party.
@@ -28,13 +31,15 @@ export function renderOwnerPage(props: OwnerPageProps & { readonly nonce: PageNo
 			(props.factorPage !== undefined && props.factorPage !== 'hidden'
 				? passkeyPageScript() + factorFormScript()
 				: '') +
-			// Island roots exist on every page that shows a factor step or factor management.
-			(props.ready && props.factorPage !== undefined && props.factorPage !== 'hidden'
+			// Passkey sign-in, factor controls and membership choices share the island entry.
+			(!props.ready ||
+			(props.factorPage !== undefined && props.factorPage !== 'hidden') ||
+			(props.memberships?.length ?? 0) > 0
 				? signInPagesIslandScript
 				: '') +
 			(props.ready
 				? ''
-				: '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onSignInTurnstileReady&amp;render=explicit" async defer></script>'),
+				: '<script id="sign-in-turnstile-script" src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onSignInTurnstileReady&amp;render=explicit" async defer></script>'),
 	});
 	return new Response(document.html, { headers: document.headers });
 }

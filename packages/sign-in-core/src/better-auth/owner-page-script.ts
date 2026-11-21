@@ -10,7 +10,9 @@ export function ownerPageScript(props: {
 	return `<script>
 const form=document.getElementById('owner-sign-in');const statusElement=document.getElementById('status');
 const ready=${JSON.stringify(props.ready)};let captchaState={kind:'empty'};let widgetId=null;
-if(!ready){window.onSignInTurnstileReady=()=>{const container=document.getElementById('sign-in-captcha');
+if(!ready){window.signInTurnstile='loading';
+window.addEventListener('error',(event)=>{if(event.target?.id!=='sign-in-turnstile-script')return;window.signInTurnstile='failed';window.dispatchEvent(new Event('sign-in-turnstile-failed'));statusElement.textContent='Sign-in verification is unavailable.';},true);
+window.onSignInTurnstileReady=()=>{window.signInTurnstile='ready';window.dispatchEvent(new Event('sign-in-turnstile-ready'));const container=document.getElementById('sign-in-captcha');
 widgetId=window.turnstile.render(container,{sitekey:container.dataset.sitekey,action:container.dataset.action,size:'flexible',
 callback:(token)=>{captchaState=typeof token==='string'&&token.length>0?{kind:'ready',token}:{kind:'empty'};},
 'expired-callback':()=>{captchaState={kind:'empty'};},
@@ -44,12 +46,6 @@ if(!response.ok){const failure=await response.json().catch(()=>null);
 if(failure!==null&&typeof failure==='object'&&failure.code==='SECOND_FACTOR_REQUIRED'){if(confirmAgain)confirmAgain.hidden=false;throw new Error('Your confirmation has expired. Confirm with your app again to create the organization.');}
 throw new Error('Organization creation was refused');}location.reload();
 }catch(error){statusElement.textContent=error instanceof Error?error.message:'Organization creation unavailable';}});
-const organizationChooser=document.getElementById('choose-organization');
-if(organizationChooser)organizationChooser.addEventListener('submit',async(event)=>{event.preventDefault();statusElement.textContent='';
-try{const organizationId=event.submitter?.value;if(!organizationId)throw new Error('Choose an organization');
-const response=await fetch('/api/auth/organization/set-active',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({organizationId})});
-if(!response.ok)throw new Error('Organization selection was refused');location.reload();
-}catch(error){statusElement.textContent=error instanceof Error?error.message:'Organization selection unavailable';}});
 </script><script>
 (()=>{const retry=document.getElementById('retry-organization-provisioning');if(!retry)return;
 retry.addEventListener('submit',async(event)=>{event.preventDefault();const button=retry.querySelector('button');button.disabled=true;

@@ -43,6 +43,8 @@ jobs:
   e2e-host:
     name: E2E (${{ matrix.lane }})
     runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
     strategy:
       fail-fast: false
       matrix:
@@ -53,21 +55,51 @@ jobs:
         with:
           persist-credentials: false
 
-      - parallel:
-          - name: Set up Node workspace
-            uses: ./.github/actions/setup-agent-vm
+      - name: Set up system packages
+        id: system-packages
+        background: true
+        uses: ./.github/actions/setup-system-packages
 
-          - name: Set up system packages
-            uses: ./.github/actions/setup-system-packages
+      - name: Set up Node workspace
+        uses: ./.github/actions/setup-agent-vm
+        with:
+          build: 'false'
 
-          - name: Set up Python workspace
-            if: matrix.lane == 'host'
-            uses: ./.github/actions/setup-python-workspace
+      - name: Restore Chromium
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .cache/ms-playwright
+          key: ${{ runner.os }}-playwright-1.61.1-chromium-headless-shell
+
+      - wait: system-packages
+
+      - name: Install Chromium for Playwright
+        id: chromium
+        background: true
+        run: pnpm --filter ./packages/sign-in-test-support exec playwright install --with-deps --only-shell chromium
+
+      - name: Build workspace
+        run: pnpm build
+
+      - wait-all:
+
+      - name: Record browser version
+        run: |
+          pnpm --filter ./packages/sign-in-test-support exec playwright --version
+          pnpm exec vitest run --project e2e-host packages/sign-in-test-support/src/native-browser-click.host.e2e.test.ts -t '^dispatches real native input to a stable selected control$' --maxWorkers=1
 
       - name: Run E2E lane
         env:
           AGENT_VM_E2E_SKIP_WORKSPACE_BUILD: '1'
         run: pnpm run test:e2e:${{ matrix.lane }}
+
+      - name: Upload browser failure summaries
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sign-in-browser-failures
+          path: ${{ runner.temp }}/switchboard-browser-failures/*.txt
+          if-no-files-found: ignore
 
   check:
     name: check

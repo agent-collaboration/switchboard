@@ -10,6 +10,9 @@ export function decorateNodeProofStore(props: {
 	readonly store: SignInStore;
 	readonly beforeAgentRead: (clientId: string) => Promise<void>;
 	readonly beforeOwnerRead: () => Promise<void>;
+	readonly organizationRead?: {
+		readonly afterRead: (kind: 'lookup' | 'list', organizationId: string) => Promise<void>;
+	};
 	readonly personConfirmation?: {
 		readonly clock: SignInClock;
 		readonly afterRead: (observation: {
@@ -24,6 +27,23 @@ export function decorateNodeProofStore(props: {
 }): SignInStore {
 	return {
 		...props.store,
+		organizations: {
+			...props.store.organizations,
+			async readPersonMembershipFacts(
+				request,
+			): ReturnType<SignInStore['organizations']['readPersonMembershipFacts']> {
+				const result = await props.store.organizations.readPersonMembershipFacts(request);
+				await props.organizationRead?.afterRead('lookup', request.organizationId);
+				return result;
+			},
+			async listOrganizationPeople(
+				request,
+			): ReturnType<SignInStore['organizations']['listOrganizationPeople']> {
+				const result = await props.store.organizations.listOrganizationPeople(request);
+				await props.organizationRead?.afterRead('list', request.organizationId);
+				return result;
+			},
+		},
 		agents: {
 			...props.store.agents,
 			async read(clientId: string): ReturnType<SignInStore['agents']['read']> {

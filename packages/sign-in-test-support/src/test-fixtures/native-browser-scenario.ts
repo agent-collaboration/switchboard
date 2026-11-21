@@ -13,24 +13,24 @@ import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/contr
 import { initialSignInTestTime } from '#sign-in-test-support/test-fixtures/controlled-sign-in-time';
 import { startLocalAuthHarness } from '#sign-in-test-support/test-fixtures/local-auth-harness';
 import {
-	NativeBrowserPage,
-	nativeNetworkResponseSchema,
-} from '#sign-in-test-support/test-fixtures/native-browser-page';
-import {
-	startHeadlessChrome,
-	type ChromeProtocol,
-} from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+	finishNativeBrowserScenario,
+	type NativeBrowserFailure,
+} from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
 import { prepareNodeProofArtifacts } from '#sign-in-test-support/test-fixtures/node-proof-artifacts';
+import {
+	launchProofBrowser,
+	type PlaywrightBrowserPage,
+} from '#sign-in-test-support/test-fixtures/playwright-browser';
+import { nativeNetworkResponseSchema } from '#sign-in-test-support/test-fixtures/playwright-network';
 import { prepareProofBundles } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 
-const empty = z.object({}).passthrough();
 const initialMilliseconds = initialSignInTestTime;
 const email = 'owner@example.invalid';
 const execute = promisify(execFile);
 const digest = (bytes: string | Uint8Array): string =>
 	createHash('sha256').update(bytes).digest('hex');
 
-interface Step {
+export interface NativeBrowserStep {
 	readonly name: string;
 	readonly status: 'passed' | 'failed';
 	readonly facts: Readonly<Record<string, unknown>>;
@@ -38,7 +38,10 @@ interface Step {
 }
 
 /** The standard host lane owns the checkout and build; every run gets private evidence and state. */
-export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): Promise<void> {
+export async function observeNativeFactorBrowser(
+	host: 'node' | 'cloudflare',
+	scenarioSignal: AbortSignal,
+): Promise<void> {
 	const root = fileURLToPath(new URL('../../../../', import.meta.url));
 	const sourceRevision = (await execute('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
 	// A label only, from the controlled clock (R33); mkdtemp's suffix keeps each run private.
@@ -62,12 +65,13 @@ export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): P
 	process.stdout.write(
 		JSON.stringify({ event: 'native-browser-evidence', host, sourceRevision, evidence }) + '\n',
 	);
-	const steps: Step[] = [];
+	const steps: NativeBrowserStep[] = [];
 	let activeStep = 'prepare';
 	let harness: Awaited<ReturnType<typeof startLocalAuthHarness>> | undefined;
-	let chrome: Awaited<ReturnType<typeof startHeadlessChrome>> | undefined;
-	let browserPage: NativeBrowserPage | undefined;
+	let chrome: Awaited<ReturnType<typeof launchProofBrowser>> | undefined;
+	let browserPage: PlaywrightBrowserPage | undefined;
 	let cleanupFailure: string | null = null;
+	let scenarioFailure: NativeBrowserFailure = { kind: 'none' };
 	let appMilliseconds = initialMilliseconds;
 	const statuses: { readonly pathname: string; readonly status: number }[] = [];
 	const consoleCounts = { logErrors: 0, exceptions: 0 };
@@ -110,39 +114,28 @@ export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): P
 		} else delete process.env.AUTH_PROOF_NODE_MANIFEST_FILE;
 		harness = await startLocalAuthHarness({
 			turnstileSecret: 'published-test',
+			host,
 			authenticatorClock: { now: () => epochMillisecondsSchema.parse(appMilliseconds) },
 		});
 		const activeHarness = harness;
-		chrome = await startHeadlessChrome(evidence);
-		const browserVersion = await chrome.browser.call(
-			'Browser.getVersion',
-			{},
-			z.object({
-				protocolVersion: z.string(),
-				product: z.string(),
-				revision: z.string(),
-				userAgent: z.string(),
-				jsVersion: z.string(),
-			}),
-		);
+		if (activeHarness.signInHost !== host)
+			throw new Error(`Requested ${host} browser scenario resolved ${activeHarness.signInHost}`);
+		chrome = await launchProofBrowser({
+			evidence,
+			origin: activeHarness.issuer,
+			width: 390,
+			scenarioSignal,
+		});
+		const page = chrome.protocol;
+		const browserVersion = await page.send('Browser.getVersion');
 		await writeFile(
 			path.join(evidence, 'browser-version.json'),
 			JSON.stringify(browserVersion, null, 2),
 			{ mode: 0o600, flag: 'wx' },
 		);
-		const page: ChromeProtocol = chrome.page;
-		browserPage = new NativeBrowserPage(page, evidence);
+		browserPage = chrome;
 		const activeBrowser = browserPage;
-		await Promise.all(
-			['Page.enable', 'Runtime.enable', 'Network.enable', 'Log.enable'].map((method) =>
-				page.call(method, {}, empty),
-			),
-		);
-		await page.call(
-			'Emulation.setDeviceMetricsOverride',
-			{ width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
-			empty,
-		);
+		await page.send('Log.enable');
 		page.on('Network.responseReceived', (value): void => {
 			const parsed = nativeNetworkResponseSchema.safeParse(value);
 			if (parsed.success && new URL(parsed.data.response.url).origin === activeHarness.issuer)
@@ -405,80 +398,126 @@ export async function observeNativeSignInBrowser(host: 'node' | 'cloudflare'): P
 		)
 			throw new Error('Native browser checkout changed during the journey');
 	} catch (error) {
-		let failureScreenshot: Step['screenshot'];
-		try {
-			if (browserPage !== undefined)
-				failureScreenshot = await browserPage.screenshot('failure-state');
-		} catch {
-			/* Retain the original failure even if the browser closed. */
-		}
-		steps.push({
-			name: activeStep,
-			status: 'failed',
-			facts: { message: error instanceof Error ? error.message : 'Unknown native browser failure' },
-			...(failureScreenshot === undefined ? {} : { screenshot: failureScreenshot }),
-		});
-		throw error;
+		scenarioFailure = { kind: 'failed', error };
 	} finally {
-		try {
-			await chrome?.close();
-		} catch (error) {
-			cleanupFailure = error instanceof Error ? error.message : 'Chrome cleanup failed';
-		}
-		try {
-			await harness?.close();
-		} catch (error) {
-			cleanupFailure = error instanceof Error ? error.message : 'Harness cleanup failed';
-		}
-		for (const [name, value] of Object.entries({
-			SIGN_IN_TEST_HOST: previousEnvironment.host,
-			AUTH_PROOF_MANIFEST_FILE: previousEnvironment.manifest,
-			AUTH_PROOF_NODE_MANIFEST_FILE: previousEnvironment.nodeManifest,
-		})) {
-			if (value === undefined) delete process.env[name];
-			else process.env[name] = value;
-		}
-		await writeFile(path.join(evidence, 'steps.json'), JSON.stringify(steps, null, 2), {
-			mode: 0o600,
-		});
-		await writeFile(
-			path.join(evidence, 'observation.json'),
-			JSON.stringify(
-				{
-					target: {
-						sourceRevision,
-						root,
-						expectedAssets,
-						executionHost: hostname(),
-						nodeVersion: process.version,
+		const failureStep: NativeBrowserStep | undefined =
+			scenarioFailure.kind === 'failed'
+				? {
+						name: activeStep,
+						status: 'failed',
+						facts: {
+							message:
+								scenarioFailure.error instanceof Error
+									? scenarioFailure.error.message
+									: 'Unknown native browser failure',
+						},
+					}
+				: undefined;
+		const failureBrowser = browserPage;
+		await finishNativeBrowserScenario({
+			failure: scenarioFailure,
+			recordFailure: async (): Promise<void> => {
+				if (failureStep === undefined) return;
+				steps.push(failureStep);
+				await writeFile(path.join(evidence, 'steps.json'), JSON.stringify(steps, null, 2), {
+					mode: 0o600,
+				});
+			},
+			...(failureBrowser === undefined
+				? {}
+				: { captureFailure: () => failureBrowser.captureFailureFrame() }),
+			close: async (): Promise<void> => {
+				const closeFailures: unknown[] = [];
+				try {
+					await chrome?.close();
+				} catch (error) {
+					cleanupFailure = error instanceof Error ? error.message : 'Chrome cleanup failed';
+					closeFailures.push(error);
+				}
+				try {
+					await harness?.close();
+				} catch (error) {
+					cleanupFailure = error instanceof Error ? error.message : 'Harness cleanup failed';
+					closeFailures.push(error);
+				}
+				for (const [name, value] of Object.entries({
+					SIGN_IN_TEST_HOST: previousEnvironment.host,
+					AUTH_PROOF_MANIFEST_FILE: previousEnvironment.manifest,
+					AUTH_PROOF_NODE_MANIFEST_FILE: previousEnvironment.nodeManifest,
+				})) {
+					if (value === undefined) delete process.env[name];
+					else process.env[name] = value;
+				}
+				if (closeFailures.length === 1) throw closeFailures[0];
+				if (closeFailures.length > 1)
+					throw new AggregateError(closeFailures, 'Native browser cleanup failed', {
+						cause: closeFailures[0],
+					});
+			},
+			record: async (capture): Promise<void> => {
+				let failureScreenshot: NativeBrowserStep['screenshot'];
+				if (capture !== undefined && failureBrowser !== undefined) {
+					try {
+						failureScreenshot = await failureBrowser.recordScreenshot('failure-state', capture);
+					} catch {
+						// Optional frame storage cannot replace the already-persisted deciding error.
+					}
+				}
+				const capturedFailure =
+					failureStep !== undefined && failureScreenshot !== undefined
+						? { ...failureStep, screenshot: failureScreenshot }
+						: undefined;
+				const completedSteps = steps.map((step) =>
+					step === failureStep && capturedFailure !== undefined ? capturedFailure : step,
+				);
+				await writeFile(
+					path.join(evidence, 'steps.json'),
+					JSON.stringify(completedSteps, null, 2),
+					{
+						mode: 0o600,
 					},
-					host,
-					layer: 'local Chrome against native Better Auth and selected real storage',
-					steps,
-					statuses,
-					consoleCounts,
-					cleanupFailure,
-					chromePid: chrome?.pid ?? null,
-					standIns: [
-						'controlled external provider and Turnstile siteverify for existing-session setup',
-						'software authenticator',
-						'injected clock',
-						'central provisioning model',
-					],
-					notCovered: [
-						'real Google/GitHub sign-in',
-						'Cloudflare challenge acceptance',
-						'physical authenticator',
-						'hosted deployment',
-						'global clipboard/download/print effects',
-					],
-					note: 'Harness bootstrap readiness receipt is not the browser witness; authenticated native owner UI and native endpoint results are this journey witness.',
-				},
-				null,
-				2,
-			),
-			{ mode: 0o600 },
-		);
+				);
+				await writeFile(
+					path.join(evidence, 'observation.json'),
+					JSON.stringify(
+						{
+							target: {
+								sourceRevision,
+								root,
+								expectedAssets,
+								executionHost: hostname(),
+								nodeVersion: process.version,
+							},
+							host,
+							layer: 'local Chrome against native Better Auth and selected real storage',
+							steps: completedSteps,
+							statuses,
+							consoleCounts,
+							cleanupFailure,
+							browserConnectedAfterClose: chrome?.isBrowserConnected() ?? null,
+							actualHarnessHost: harness?.signInHost ?? null,
+							harnessTeardown: harness?.teardownObservations.map((entry) => entry.kind) ?? [],
+							standIns: [
+								'controlled external provider and Turnstile siteverify for existing-session setup',
+								'software authenticator',
+								'injected clock',
+								'central provisioning model',
+							],
+							notCovered: [
+								'real Google/GitHub sign-in',
+								'Cloudflare challenge acceptance',
+								'physical authenticator',
+								'hosted deployment',
+								'global clipboard/download/print effects',
+							],
+							note: 'Harness bootstrap readiness receipt is not the browser witness; authenticated native owner UI and native endpoint results are this journey witness.',
+						},
+						null,
+						2,
+					),
+					{ mode: 0o600 },
+				);
+			},
+		});
 	}
-	if (cleanupFailure !== null) throw new Error(cleanupFailure);
 }

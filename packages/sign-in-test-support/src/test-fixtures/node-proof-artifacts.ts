@@ -47,6 +47,7 @@ async function nodeConfigurationSource(root: string): Promise<string> {
 		'turnstile-test-keys',
 		'closed-siteverify-endpoint',
 		'node-auth-proof-host',
+		'passkey-release-failure',
 		'node-proof-invocation-failure',
 		'jwks-fetch-observation',
 		'node-proof-store',

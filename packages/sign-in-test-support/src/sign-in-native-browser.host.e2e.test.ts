@@ -1,18 +1,35 @@
-import { it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 
-import { initialSignInTestTime } from '#sign-in-test-support/test-fixtures/controlled-sign-in-time';
-import { observeNativeSignInBrowser } from '#sign-in-test-support/test-fixtures/native-browser-scenario';
+import { useControlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-node-test-clock';
+import { observeNativeFactorBrowser } from '#sign-in-test-support/test-fixtures/native-browser-scenario';
+import {
+	observeNativePasskeyBrowser,
+	passkeyCliCancellationReason,
+} from '#sign-in-test-support/test-fixtures/native-passkey-browser-scenario';
+import { runProofBrowserScenario } from '#sign-in-test-support/test-fixtures/playwright-browser';
 
-it.each(['node', 'cloudflare'] as const)(
-	'F native Better Auth browser journey on %s',
+const hosts = ['node', 'cloudflare'] as const;
+const passkeyCases = ['journey', 'no-user-verification', 'cli-login', 'script-failure'] as const;
+useControlledSignInClock();
+
+it.each(hosts)('F native Better Auth factor and owner pages on %s', async (host): Promise<void> => {
+	await runProofBrowserScenario((signal) => observeNativeFactorBrowser(host, signal));
+});
+
+it.each(hosts.flatMap((host) => passkeyCases.map((scenario) => [scenario, host] as const)))(
+	'passkey %s on %s',
+	async (scenario, host): Promise<void> => {
+		await runProofBrowserScenario((signal) => observeNativePasskeyBrowser(host, scenario, signal));
+	},
+);
+
+it.each(hosts)(
+	'passkey CLI cancellation closes the owning scenario on %s',
 	async (host): Promise<void> => {
-		// The existing Node proof host uses Vitest's Date seam. Protocol timers stay real.
-		vi.useFakeTimers({ toFake: ['Date'] });
-		vi.setSystemTime(initialSignInTestTime);
-		try {
-			await observeNativeSignInBrowser(host);
-		} finally {
-			vi.useRealTimers();
-		}
+		await expect(
+			runProofBrowserScenario((signal) =>
+				observeNativePasskeyBrowser(host, 'cli-login', signal, true),
+			),
+		).rejects.toThrow(passkeyCliCancellationReason);
 	},
 );

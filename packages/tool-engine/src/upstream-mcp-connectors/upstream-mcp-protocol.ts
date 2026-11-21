@@ -13,8 +13,10 @@ import {
 	messageFromUnknownError,
 } from '#upstream-mcp-connectors/upstream-mcp-errors';
 import {
+	redactCredentialText,
 	redactThrownError,
 	redactUpstreamCatalogValue,
+	type RedactionOptions,
 } from '#upstream-mcp-connectors/upstream-response-middleware';
 
 export interface ListToolsCall {
@@ -135,7 +137,10 @@ export function isMcpToolErrorResult(value: unknown): boolean {
 	return isObjectRecord(value) && value.isError === true;
 }
 
-export function providerErrorMessageFromMcpToolError(value: unknown): string | undefined {
+export function providerErrorMessageFromMcpToolError(
+	value: unknown,
+	redactionOptions?: RedactionOptions,
+): string | undefined {
 	if (!isObjectRecord(value) || !Array.isArray(value.content)) {
 		return undefined;
 	}
@@ -148,7 +153,11 @@ export function providerErrorMessageFromMcpToolError(value: unknown): string | u
 			) {
 				return [];
 			}
-			return [contentBlock.text.trim()];
+			const text =
+				redactionOptions === undefined
+					? contentBlock.text
+					: redactCredentialText(contentBlock.text, redactionOptions);
+			return [text.trim()];
 		})
 		.filter((text) => text.length > 0)
 		.join('\n');

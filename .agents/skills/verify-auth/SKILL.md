@@ -1,58 +1,27 @@
 ---
 name: verify-auth
-description: "Use when verifying local T3 agent issuance, owner bootstrap, native sign-in browser pages, live-person rejection, organization statements and renewal, revision fences, or people (organizations, invitations, member removal and their change records) in Switchboard's sign-in service. Not for standalone MCP bearer configuration or hosted sign-in verification."
+description: "Verify Switchboard's passkey, organization, CLI and agent sign-in journeys on Node and workerd. Use for changes to those flows, the B2 evidence routes or a guard's sensitivity check."
 ---
 
-# Verify auth
+# Verify Switchboard sign-in
 
-Issuer state decides whether an agent gets a proof. Workspace membership decides whether its next call runs. For bootstrap, observe issuer, owner, fixed client and Person/session state. For agent, observe both storage owners (issuer and admission) and the real tool effect before calling that journey successful.
+The local harness serves Switchboard over HTTP on Node with SQLite or workerd with D1. It uses controlled identity providers, Turnstile, authenticators and Central. Browser cases use a fresh Playwright Chromium context, and owner CLI cases use private temporary caches.
 
-This skill covers the local T3 sign-in Worker, its named `AgentClientManagement` binding, the production Gateway path and workspace Durable Object. The harness uses actual workerd, D1, Better Auth and Gateway code. Only the external Google protocol, the upstream tool and Cloudflare Turnstile's siteverify are controlled fixtures. Turnstile runs in local mode with Cloudflare's published test site key and secret against a siteverify stand-in on the issuer's own origin. A fixture provider identity never establishes a real hosted login, and a stand-in verdict never proves Cloudflare's real token checks (real widget, secret and token replay are JC1's).
+Run from the repository root with Node 24.7.0, the pnpm version in `package.json`, and a locally available target commit containing the journey. Install the runner with `pnpm install --frozen-lockfile`. The four journey scripts check out the target in a private directory, install its locked dependencies and build it. Browser journeys install the target's pinned Chromium bundle. Agents need no browser.
 
-The same journeys also run against the sign-in Node host. A `local-node` target serves every sign-in route from the built `sign-in-host-node` listener on better-sqlite3, and a fixture-only Worker bridge carries the named management binding from the Gateway's workerd to that listener; Gateway and the workspace Durable Object stay on workerd. A Node observation counts only when every Node invocation receipt matches the call that started it; the reference owns that comparison. This is a local test target, not a deployed Node production host.
+The permanent tests start the harness and establish readiness with a usable JWKS, the original native CLI callback or a confirmed session and its stored effects. On a live harness, `GET /api/auth/jwks` must return 200 with a usable key.
 
-The W-cut workspace recipe is a draft until both journeys run on the declared joint Auth/Tool Portal target and a fresh reader drives the updated instructions. Pure checks and earlier S1 observations do not prove the workspace cutover. Raw intermediate D1/DO snapshots and upstream-ledger export remain unretained. Hosted observations remain unverified.
+| Journey | Run when | Entry and observations |
+| --- | --- | --- |
+| Passkey sign-in | The button, UV, refusal, session or audit changes | `scripts/verify-auth/passkey-sign-in.ts` · [passkey sign-in](references/passkey-sign-in.md) |
+| Organizations | Choice, switching, People or checked membership reads change | `scripts/verify-auth/organizations.ts` · [organizations](references/organizations.md) |
+| CLI sign-in | Bootstrap, Continue, trusted click or keyboard activation changes | `scripts/verify-auth/cli-sign-in.ts` · [CLI sign-in](references/cli-sign-in.md) |
+| Agents | Registration, workspace binding or credential use changes | `scripts/verify-auth/agents.ts` · [agents](references/agents.md) |
+| B2 organization and revision fence | Statement, key retention or fence behavior changes | `pnpm verify:sign-in organization` or `revision-fence` with a private `--target-file` · [organization statements](references/organization-statements.md), [revision fences](references/revision-fences.md) |
+| Security checks | A guarded path, its test, oracle or driver changes | `scripts/verify-auth/security-checks.ts` · [scope and exact red/restore rule](references/security-checks.md) |
+| Staging sign-in | Open until BG staging | [BG staging observations](references/staging.md) |
+| Machine login | Future B3 protected-operation refusal after revocation | Open |
 
-## Native sign-in browser pages (WS6 F)
+`pnpm verify:sign-in --commit <sha>` runs the four local journeys. Each entry accepts `--help`; a journey can run on its own with `pnpm exec tsx scripts/verify-auth/<journey>.ts --commit <sha>`. Each browser case has a named host where it uses the real HTTP harness. Input-only fixture cases use Chromium without a server.
 
-Use `packages/sign-in-test-support/src/sign-in-native-browser.host.e2e.test.ts` after changes to the served sign-in islands, enrollment/confirmation transitions, organization-create or recovery-code replacement. It runs both real storage hosts through headless Chrome in the normal `pnpm test:e2e:host` lane, with the existing native Better Auth harness and injected clock. Load `references/native-browser.md` for Chrome setup, the same-checkout build, observations, private evidence and limits. There is no private target file or dedicated Vitest configuration.
-
-This browser case has its own readiness witness: an actual native callback reaches the authenticated enrollment UI, followed by native enrollment and later effects. It bypasses the harness wrapper's bootstrap witness, so its harness receipt can remain `ready: false`. Never count that receipt as a passing bootstrap, agent or people journey. The browser recipe's standard-lane runtime remains a draft until its relocated host test has run on the UI-integrated checkout and CI; earlier cross-worktree observations do not establish that integration.
-
-## Organization statements (Fleet access B2)
-
-WS7 recovery adds `central empty:` and `central forgot:` storage cases and the `central forgot (WS7 ...)` relay case to both organization and revision journeys. They distinguish an authoritative empty digest from a slow or still-provisioned central, preserve the single guard budget, and require current floors before retry. These remain recording-peer/component observations. The separate B2e lane must restart real pinned central with fresh storage on both pairings; these journeys cannot replace that acceptance prerequisite.
-
-Choose `organization` after changing native statement signing, provisioning, renewal on use or the persisted stamp record. Run both `local-workerd` (D1) and `local-node` (the built Node listener with better-sqlite3). The journey includes guarded revision pushes, admin forwarding and relay, plus both storage legs for the stamp record. Central is a recording peer: its actual CAS, verified digest source, old-key retention and cold restart remain unverified.
-
-Load `references/organization-statements.md` for the command, observation map, 120-day/60-day expectations, target comparison, private request-body and final row exports, and cleanup. This journey is component proof; it does not establish integrated Fleet access, hosted login or browser behavior.
-
-## Revision fences (Fleet access B2 slice 2)
-
-Choose `revision-fence` for native role/member/session writes, person-fleet token release, revision push/ACK synchronization, rollback, or backfill idempotency. Run both `local-workerd` and `local-node`. Load `references/revision-fences.md`, then `references/person-fleet-tokens.md` and `references/revision-push.md` for the accepted layered proof, real-provider/recording-peer boundaries, host exclusions, evidence and command. This proves the sign-in component; central floor application/admission, production deployment and backfill-policy adoption remain separate.
-
-## Select and bind the target
-
-Choose `bootstrap` for the fixed public native owner client, code+S256 loopback and owner cookie boundary. Choose `agent` for owner-authorized registration/linking, workspace-bound issuance and calls, live-person rejection, unlinking and organization-wide retirement. Choose `people` for Better Auth's organization plugin: the configured owner creating the first organization, invite, accept, cancel and remove with their before/after change records, member and owner-removal refusals, unoffered plugin routes, and the approved migration's upgrade. It also runs B1b's second-factor cases (enrollment, app first then a passkey, and passkey confirmation) and B1c's sign-in flood limits (slowed requests change nothing), as they are added. On Cloudflare the over-limit cases run on Miniflare's real rate-limit binding (429 with `Retry-After`, nothing changed, and a second address still passes), and the journey is admitted only when every receipt names the host's real counter. The window reset is proven on the controlled clock through Better Auth's provider-layer limit and the Node host's fixed-window counter; the hosted binding's reset and cross-location counting are checked on the private stack, so this earns no Cloudflare vendor credit. One people case per host arms a real backing-limiter failure (the Node counter throws, or the Cloudflare binding rejects) and must get 503 with nothing changed. The passkey page case drives the delivered `/owner-ready` passkey controller and DOM with a test stand-in for `navigator.credentials`, backed by a software EC authenticator, over real HTTP to the native verifier and storage. It makes no claim about a physical authenticator, hardware or biometric user verification, or a real browser. The owner-page cases drive the served first-login forms (native organization create, then Continue back to the original CLI loopback) and the organization chooser for a person with two memberships, from served pages without navigating any saved authorization URL. All three use `scripts/verify-auth/verify-auth.ts`; `scripts/verify-auth/owner-cli.ts` is the delivered native owner CLI.
-
-MUST load `references/agent-bootstrap.md` and return the selected journey, complete compared target tuple, required observations and remaining prerequisite gaps.
-
-Before counting any observation, compare the declared source revision, executed build/artifact, configuration, client, offered test inventory, host and toolchain with the actual execution. A fixed configuration/client/inventory must come from the frozen fixture source. Missing comparison evidence or a mismatch is a prerequisite failure, even if some tests pass. The reference owns how to obtain and compare those identities.
-
-Start through the selected journey command after its target and execution machine are selected. Readiness means the real harness has started and applied its migrations, and then reached a real witness, which each harness receipt names as `readinessEvent`. For `bootstrap` and `agent` the witness is public JWKS answered with a usable key during authorization (`jwks`) or a native CLI login (`personToken`). `people` also accepts `signInSession`: a Google or GitHub callback that issued its session cookie, with the matching session row read back from the database. Every receipt must be `ready: true` with an event its journey accepts. A process, discovered test list, an HTTP200 without the expected witness, or `ready: false` is insufficient. Retain readiness failure as a failed run; do not replace it with a synthetic issuer.
-
-## Report observations
-
-Keep the command, exit code, selected pass/fail counts, separately named unselected tests and complete compared target tuple. Bootstrap requires direct issuer/owner/client/session assertions. The agent journey is observed when its permanent assertions pass on the compared target: those assertions read D1/DO and the controlled upstream ledger directly. Report their coverage and the named assertion gaps separately; zero passing selected observations, failed setup and skipped cases never count as observed behavior.
-
-Retain the runner's harness identity/readiness receipts, Vitest JSON, case/phase/runtime logs, install/build logs and runtime SQLite files in owned private storage outside Git. The driver does not export raw intermediate D1/DO row snapshots or the in-memory upstream ledger; record that deferred retention gap. Public reports contain redacted identities and results; never publish tokens, cookies, signing keys, captured codes or resolved private target values. Keep wrong-build patches with their intended assertion failure and restored-green run. Setup failures are not mutant reds.
-
-An agent client has zero or many workspace-resource links. Its metadata carries organization only; the requested E6 resource supplies signed `workspace_id`. Workspace removal first removes membership, then unlinks that resource. Organization retirement removes every configured membership, then disables once without unlinking. Retirement supersedes an old pending unlink; a stale retry reads retirement completion. Auth can disable a zero-link client. Tool Portal refuses organizations with no configured workspace before sign-in.
-
-Every management command must check the live Person/session again. A remembered browser session, CLI login or `--force-auth` does not prove physical presence or intent for the exact command. Stronger human-check modes must report not implemented and fail closed; never substitute remembered login.
-
-## Finish and clean up
-
-The selected journey is observed only when its permanent assertions pass on the compared real target and the evidence the runner actually retains is preserved. Use the reference's authoritative S1 decider map to report missing assertions or wrong-build receipts rather than broadening the passing claim. Hosted accounts, real provider/browser identity and UI, replication, CPU and stronger human intent remain unverified by these local journeys.
-
-Let harness teardown stop its own workerd, HTTP listeners and CLI child. On failure, identify and stop only the processes owned by this run; preserve needed private evidence until its consumers finish. Remove only this run's disposable runtime residue under the repository's cleanup rules. Never stop another agent's processes or delete a shared cache to repair a run.
+Read the private report for the target commit and build, actual test identities and counts, verdict and assertion, applicable restore result, and the post-close snapshot of processes whose arguments identify the run. Inspect the retained logs for failures. Keep credentials, response bodies and screenshots private. Software fixtures cover local behavior. The deployed settings, real provider identity, physical authenticators and hosted limits have separate proof.

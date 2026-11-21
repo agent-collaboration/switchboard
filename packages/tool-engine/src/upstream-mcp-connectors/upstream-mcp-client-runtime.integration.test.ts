@@ -17,6 +17,46 @@ describe('upstream MCP session lifecycle', () => {
 		vi.unstubAllEnvs();
 	});
 
+	it.each([
+		{ label: 'isError', secret: 'Error' },
+		{ label: 'content', secret: 'on' },
+		{ label: 'long exact value before truncation', secret: `opaque-${'s'.repeat(2100)}` },
+		{ label: 'exact value before whitespace trimming', secret: ' opaque ' },
+	])('classifies tool errors and preserves redaction for $label', async ({ secret }) => {
+		const client: UpstreamMcpClientLike = {
+			callTool: vi.fn(async () => ({
+				isError: true,
+				content: [{ type: 'text', text: `provider ${secret}` }],
+			})),
+			close: vi.fn(),
+			connect: vi.fn(),
+			listTools: vi.fn(async () => ({ tools: [] })),
+		};
+		const runtime = createUpstreamMcpClientRuntime({
+			createClient: () => client,
+			createTransport: fakeTransport,
+			servers: [createServer({ headers: { 'x-synthetic-secret': secret } })],
+		});
+		try {
+			await expect(
+				runtime.callTool({
+					arguments: {},
+					agentScopeId: 'synthetic-scope',
+					namespace: 'linear',
+					toolName: 'read',
+				}),
+			).rejects.toMatchObject({
+				details: {
+					failureClass: 'tool_error',
+					phase: 'call_tool',
+					providerErrorMessage: 'provider [REDACTED]',
+				},
+			});
+		} finally {
+			await runtime.closeAgentScope('synthetic-scope');
+		}
+	});
+
 	it('pages listTools until nextCursor is absent', async () => {
 		const client: UpstreamMcpClientLike = {
 			callTool: vi.fn(),

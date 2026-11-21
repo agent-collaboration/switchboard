@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
 	member,
 	organization,
+	organizationIdSchema,
 	createSignInStore,
 	epochMillisecondsSchema,
 	session,
@@ -16,12 +17,22 @@ import { createWebSignInCapabilities } from '@agent-collaboration/sign-in-platfo
 import { expect, it } from 'vitest';
 
 import { useControlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-node-test-clock';
+import {
+	organizationReadProjection,
+	type PreparedDriverCall,
+} from '#sign-in-test-support/test-fixtures/database-fault-identity';
 import { decorateNodeProofStore } from '#sign-in-test-support/test-fixtures/node-proof-store';
 
 useControlledSignInClock();
 
 it('the unarmed Node store decorator preserves production results and stored rows', async () => {
+	const observedCalls: PreparedDriverCall[] = [];
 	const opened = await openNodeSignInDatabase({
+		logger: {
+			logQuery(query: string, parameters: unknown[]): void {
+				observedCalls.push({ query, parameters });
+			},
+		},
 		stateDirectory: await mkdtemp(path.join(tmpdir(), '2026-10-node-store-transparency-')),
 	});
 	if (opened.kind !== 'available') throw new Error('Database setup failed');
@@ -57,7 +68,7 @@ it('the unarmed Node store decorator preserves production results and stored row
 		runAtomically: opened.database.runAtomically,
 		log: (): void => {},
 	};
-	const organizationId = platform.ids.nextId();
+	const organizationId = organizationIdSchema.parse(platform.ids.nextId());
 	const store = createSignInStore({
 		openDatabase: opened.database.openDatabase,
 		platform,
@@ -112,6 +123,43 @@ it('the unarmed Node store decorator preserves production results and stored row
 			value: { user: { id: personId }, session: { id: sessionId } },
 		});
 		expect(await decorated.persons.readOwnerSession(personId, sessionId)).toEqual(ordinaryOwner);
+		const ordinaryMembership = await store.organizations.readPersonMembershipFacts({
+			organizationId,
+			email: 'owner@example.invalid',
+		});
+		expect(ordinaryMembership).toEqual({
+			kind: 'available',
+			value: { kind: 'member', role: 'owner' },
+		});
+		expect(
+			await decorated.organizations.readPersonMembershipFacts({
+				organizationId,
+				email: 'owner@example.invalid',
+			}),
+		).toEqual(ordinaryMembership);
+		const ordinaryPeople = await store.organizations.listOrganizationPeople({
+			organizationId,
+			offset: 0,
+		});
+		expect(ordinaryPeople).toEqual({
+			kind: 'available',
+			value: {
+				members: [{ name: 'Owner', email: 'owner@example.invalid', role: 'owner' }],
+				memberTotal: 1,
+				offset: 0,
+				invitations: [],
+			},
+		});
+		expect(
+			await decorated.organizations.listOrganizationPeople({ organizationId, offset: 0 }),
+		).toEqual(ordinaryPeople);
+		expect(
+			new Set(
+				observedCalls.map(organizationReadProjection).filter((projection) => projection !== null),
+			),
+		).toEqual(
+			new Set(['membership-facts', 'people-members', 'people-count', 'people-invitations']),
+		);
 		expect(await decorated.agents.read('missing-client')).toEqual(
 			await store.agents.read('missing-client'),
 		);

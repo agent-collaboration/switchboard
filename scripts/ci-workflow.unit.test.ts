@@ -34,9 +34,18 @@ describe('Switchboard CI workflow topology', () => {
 		const host = workflow.slice(workflow.indexOf('  e2e-host:'), workflow.indexOf('  check:'));
 		expect(host).toContain('          - host');
 		expect(host).not.toMatch(/host-docker|vm-mediation/u);
-		for (const action of ['setup-agent-vm', 'setup-system-packages', 'setup-python-workspace']) {
+		for (const action of ['setup-agent-vm', 'setup-system-packages']) {
 			expect(host).toContain(`uses: ./.github/actions/${action}`);
 		}
+		expect(host).not.toContain('uses: ./.github/actions/setup-python-workspace');
+		const aptWait = host.indexOf('      - wait: system-packages');
+		const chromiumInstall = host.indexOf('      - name: Install Chromium for Playwright');
+		const waitAll = host.indexOf('      - wait-all:');
+		const hostTests = host.indexOf('      - name: Run E2E lane');
+		expect(aptWait).toBeGreaterThan(-1);
+		expect(chromiumInstall).toBeGreaterThan(aptWait);
+		expect(waitAll).toBeGreaterThan(chromiumInstall);
+		expect(hostTests).toBeGreaterThan(waitAll);
 		expect(host).toContain('run: pnpm run test:e2e:${{ matrix.lane }}');
 		expect(host).not.toMatch(/continue-on-error|--exclude|--retry/u);
 	});

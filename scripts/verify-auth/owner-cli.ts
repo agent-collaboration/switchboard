@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-// The delivered native CLI owns login and management; this is the checkout driver for that same path.
+// Enter the built owner CLI from the checkout.
 import { runOwnerCli } from '#auth-owner-cli';
 
 process.exitCode = await runOwnerCli(process.argv.slice(2));

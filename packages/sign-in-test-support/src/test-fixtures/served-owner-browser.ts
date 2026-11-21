@@ -183,6 +183,8 @@ export function createServedOwnerBrowser(props: {
 					close: (): void => undefined,
 				},
 				window: {
+					addEventListener: dom.window.addEventListener.bind(dom.window),
+					dispatchEvent: dom.window.dispatchEvent.bind(dom.window),
 					turnstile: {
 						render(
 							_element: unknown,
@@ -206,6 +208,7 @@ export function createServedOwnerBrowser(props: {
 					return pending;
 				},
 				FormData: dom.window.FormData,
+				Event: dom.window.Event,
 				location: {
 					assign: (url: string): void => completion.resolve({ kind: 'navigate', url }),
 					reload: (): void => completion.resolve({ kind: 'navigate', url: address }),
@@ -273,7 +276,10 @@ export function createServedOwnerBrowser(props: {
 						throw new Error('Served organization creation input is missing');
 					input.value = value;
 				}
-			} else if (document.getElementById('choose-organization') !== null) {
+			} else if (
+				props.selection !== undefined &&
+				document.getElementById('choose-organization') !== null
+			) {
 				form = formById('choose-organization');
 				const selection = props.selection;
 				if (selection === undefined) throw new Error('Served organization selection is missing');
@@ -303,7 +309,7 @@ export function createServedOwnerBrowser(props: {
 					props.observe({ kind: 'foreign-organization-refused', status: response.status });
 				}
 			} else {
-				const candidate = document.querySelector('form');
+				const candidate = document.querySelector('#owner-sign-in');
 				if (!(candidate instanceof dom.window.HTMLFormElement))
 					throw new Error('Served Continue form is missing');
 				form = candidate;

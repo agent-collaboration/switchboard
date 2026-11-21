@@ -1,3 +1,4 @@
+import { decodeBasicCredentials } from '@better-auth/core/oauth2';
 import { decodeJwt, decodeProtectedHeader } from 'jose';
 
 import {
@@ -24,7 +25,9 @@ import {
 	createOrganizationFleetCallGuard,
 	createOrganizationFleetCallRunner,
 } from '#sign-in-core/better-auth/organization-fleet-call-guard';
+import { readNativeOrganizationSessionView } from '#sign-in-core/better-auth/organization-read-session';
 import { bootstrapOwnerClient } from '#sign-in-core/better-auth/owner-client-bootstrap';
+import { completePasskeySignIn } from '#sign-in-core/better-auth/passkey-sign-in-completion';
 import {
 	createSignInProvider,
 	type SignInProviderProps,
@@ -33,20 +36,24 @@ import {
 	createProviderRequestState,
 	type ProviderRequestState,
 } from '#sign-in-core/better-auth/provider-request-state';
+import { readProviderRouterBody } from '#sign-in-core/better-auth/provider-router-body';
 import {
 	agentRegistrationPorts,
 	personSessionPorts,
 	workspaceResourcePorts,
 	requireStoredValue,
 } from '#sign-in-core/better-auth/store-result-adapters';
+import type { OrganizationChoice } from '#sign-in-core/contracts/organization-membership';
 import { uuid7Schema } from '#sign-in-core/contracts/sign-in-platform';
 import { runAuthorizationRevisionDrain } from '#sign-in-core/organizations/authorization-revision-drainer';
 import type { OrganizationFleetState } from '#sign-in-core/organizations/organization-provisioning';
+import { readPersonOrganizationContext } from '#sign-in-core/organizations/person-organization-context';
 import { pageAssetResponse } from '#sign-in-core/pages/page-document';
 import {
 	admitSignInRequest,
 	providerLimitedResponse,
 } from '#sign-in-core/request-limits/sign-in-request-admission';
+import { organizationReadResponse } from '#sign-in-core/response-release/organization-request-errors';
 import {
 	handleSignInRequest,
 	isPublicSignInRoute,
@@ -56,8 +63,7 @@ import {
 	type SignInResponseReleasePorts,
 } from '#sign-in-core/response-release/sign-in-response-release';
 import { decideRecentSecondFactor } from '#sign-in-core/second-factors/second-factor-step-up';
-import { personIdSchema } from '#sign-in-core/storage/models/sign-in-store';
-import type { OrganizationMembership } from '#sign-in-core/storage/organization-membership-store';
+import { personIdSchema, type OrganizationId } from '#sign-in-core/storage/models/sign-in-store';
 
 export type SignInHttpConfiguration = Omit<
 	SignInProviderProps,
@@ -154,10 +160,25 @@ export function createSignInHttpHandler(
 			await configuration.store.organizations.membershipsForPerson(current.personId),
 		).find((candidate) => candidate.organizationId === current.activeOrganizationId);
 		if (membership === undefined) return seeOther('/owner-ready');
+		let showPeopleLink = false;
+		try {
+			showPeopleLink = (
+				await provider.api.hasPermission({
+					headers: request.headers,
+					body: {
+						organizationId: membership.organizationId,
+						permissions: { organization: ['view'] },
+					},
+				})
+			).success;
+		} catch {
+			// A failed read hides only the link; the People page keeps its own guard.
+		}
 		return organizationAdminPage({
 			organizationId: membership.organizationId,
 			organizationName: membership.organizationName,
 			operationId: configuration.platform.ids.nextId(),
+			showPeopleLink,
 		});
 	}
 	async function respondToSignInRequest(
@@ -165,6 +186,7 @@ export function createSignInHttpHandler(
 		state: ProviderRequestState,
 	): Promise<Response> {
 		const persons = personSessionPorts(configuration.store.persons);
+		let passkeyAuditPending = false;
 		try {
 			const admission = await admitSignInRequest({
 				request: incomingRequest,
@@ -175,6 +197,7 @@ export function createSignInHttpHandler(
 			const url = new URL(request.url);
 			if (!isPublicSignInRoute(url.pathname, request.method))
 				return Response.json({ error: 'not-found' }, { status: 404 });
+			passkeyAuditPending = url.pathname === '/api/auth/passkey/verify-authentication';
 			if (isFleetAdminRelayRoute(url.pathname))
 				return await relayFleetAdminRequest({
 					request,
@@ -186,24 +209,46 @@ export function createSignInHttpHandler(
 				return await respondToOrganizationAdmin(request, url.pathname, state);
 			// Validate continuation before any native factor mutation, not after
 			// confirmation has already rotated the browser's session cookie.
-			const factorResume = url.pathname.startsWith('/api/auth/two-factor/')
+			const factorContinuation = url.pathname.startsWith('/api/auth/two-factor/')
 				? ownerAuthorizationResume(url.searchParams.get('authorize'), configuration.configuration)
 				: null;
+			if (factorContinuation?.kind === 'refused') return invalidRequestResponse();
+			const factorResume =
+				factorContinuation?.kind === 'resume' ? factorContinuation.authorization : null;
 			if (url.pathname === '/api/auth/link-social') {
-				const payload: unknown = await request.clone().json();
-				if (payload !== null && typeof payload === 'object' && Object.hasOwn(payload, 'idToken'))
+				// The provider refuses a body at parse time, before its session check; so must this
+				// wrapper, before its own live-session check can answer first.
+				const body = await readProviderRouterBody(request);
+				if (body.kind === 'refused') return body.response;
+				if (
+					body.kind === 'json' &&
+					body.payload !== null &&
+					typeof body.payload === 'object' &&
+					Object.hasOwn(body.payload, 'idToken')
+				)
 					return Response.json({ error: 'redirect-linking-required' }, { status: 400 });
 			}
 			if (request.method === 'GET' && ['/sign-in', '/owner-ready'].includes(url.pathname)) {
+				const resumedAuthorization = new URL(
+					'/api/auth/oauth2/authorize',
+					configuration.configuration.issuer,
+				);
+				resumedAuthorization.search = url.search;
+				// Validated before any session read, so a refused continuation has no effect.
+				const pageContinuation = ownerAuthorizationResume(
+					url.searchParams.get('authorize') ??
+						(url.searchParams.has('client_id') ? resumedAuthorization.toString() : null),
+					configuration.configuration,
+				);
+				if (pageContinuation.kind === 'refused') return invalidRequestResponse();
 				let createOrganization = false;
 				let organizationSetup:
 					| { readonly organizationId: string; readonly state: OrganizationFleetState }
 					| undefined;
 				let factorPage: FactorPageState = 'hidden';
-				let organizationChoices: readonly Pick<
-					OrganizationMembership,
-					'organizationId' | 'organizationName' | 'role'
-				>[] = [];
+				let memberships: readonly OrganizationChoice[] = [];
+				let activeOrganizationId: OrganizationId | null = null;
+				let selectionRequired = false;
 				if (url.pathname === '/owner-ready') {
 					const auth = createSignInProvider({
 						...configuration,
@@ -212,16 +257,20 @@ export function createSignInHttpHandler(
 					});
 					const current = await auth.api.getSession({
 						headers: request.headers,
-						query: { disableCookieCache: true },
+						query: { disableCookieCache: true, disableRefresh: true },
 					});
+					const organizationContext = await readPersonOrganizationContext({
+						session: readNativeOrganizationSessionView(current),
+						store: configuration.store.organizations,
+					});
+					if (organizationContext.kind === 'unavailable')
+						throw new Error('Organization context unavailable');
+					if (organizationContext.kind === 'available') {
+						memberships = organizationContext.choices;
+						activeOrganizationId = organizationContext.activeOrganizationId;
+						selectionRequired = memberships.length >= 2 && activeOrganizationId === null;
+					}
 					if (current !== null && current.user.emailVerified) {
-						const activeOrganizationId =
-							'activeOrganizationId' in current.session
-								? current.session.activeOrganizationId
-								: null;
-						const memberships = requireStoredValue(
-							await configuration.store.organizations.membershipsForPerson(current.user.id),
-						);
 						const selected = memberships.find(
 							(membership) => membership.organizationId === activeOrganizationId,
 						);
@@ -235,17 +284,6 @@ export function createSignInHttpHandler(
 						createOrganization =
 							current.user.email.toLowerCase() ===
 								configuration.configuration.ownerEmail.toLowerCase() && memberships.length === 0;
-						if (
-							memberships.length > 1 &&
-							!memberships.some((membership) => membership.organizationId === activeOrganizationId)
-						)
-							organizationChoices = memberships.map(
-								({ organizationId, organizationName, role }) => ({
-									organizationId,
-									organizationName,
-									role,
-								}),
-							);
 						const factors = requireStoredValue(
 							await configuration.store.factors.readSession(
 								personIdSchema.parse(current.user.id),
@@ -264,33 +302,25 @@ export function createSignInHttpHandler(
 										: 'confirm';
 					}
 				}
-				const resumedAuthorization = new URL(
-					'/api/auth/oauth2/authorize',
-					configuration.configuration.issuer,
-				);
-				resumedAuthorization.search = url.search;
 				return minimalOwnerPage({
 					crypto: configuration.platform.crypto,
-					organizationChoices,
+					memberships,
+					activeOrganizationId,
+					selectionRequired,
 					...(organizationSetup === undefined ? {} : { organizationSetup }),
 					factorPage,
 					createOrganization,
 					ready: url.pathname === '/owner-ready',
 					configuration: configuration.configuration,
-					resume: ownerAuthorizationResume(
-						url.searchParams.get('authorize') ??
-							(url.searchParams.has('client_id') ? resumedAuthorization.toString() : null),
-						configuration.configuration,
-					),
+					resume: pageContinuation.kind === 'resume' ? pageContinuation.authorization : null,
 				});
 			}
 			const body =
 				url.pathname === '/api/auth/oauth2/token'
 					? new URLSearchParams(await request.clone().text())
 					: undefined;
-			const basic = request.headers.get('authorization')?.match(/^Basic ([^\s]+)$/iu)?.[1];
 			const tokenClientId =
-				body?.get('client_id') ?? (basic === undefined ? undefined : atob(basic).split(':')[0]);
+				body?.get('client_id') ?? basicClientId(request.headers.get('authorization'));
 			const providerProps = {
 				...configuration,
 				requestState: state,
@@ -390,6 +420,16 @@ export function createSignInHttpHandler(
 					await configuration.store.bootstrap.recordSignIn({ actor, outcome, method }),
 				);
 			}
+			if (url.pathname === '/api/auth/passkey/verify-authentication') {
+				// Completion owns this attempt, including an unavailable audit write.
+				passkeyAuditPending = false;
+				await completePasskeySignIn({
+					response,
+					issuedSessions: state.issuedSessions,
+					recordSignIn: async (record) =>
+						requireStoredValue(await configuration.store.bootstrap.recordSignIn(record)),
+				});
+			}
 			return await renderFactorFormResponse({
 				request,
 				response,
@@ -403,10 +443,51 @@ export function createSignInHttpHandler(
 			await Promise.allSettled(
 				state.createdUserIds.map((personId) => persons.cleanupUnboundPerson(personId)),
 			);
-			return Response.json(
-				{ error: 'sign-in-unavailable' },
-				{ status: 503, headers: { 'cache-control': 'no-store' } },
+			if (passkeyAuditPending)
+				// A release rejection skips completion. Attempt its failed record after cleanup;
+				// either an unavailable store result or a rejection still leaves the same 503.
+				await Promise.allSettled([
+					configuration.store.bootstrap.recordSignIn({
+						actor: 'anonymous',
+						outcome: 'failed',
+						method: 'passkey',
+					}),
+				]);
+			return organizationReadResponse(
+				incomingRequest,
+				Response.json(
+					{ error: 'sign-in-unavailable' },
+					{ status: 503, headers: { 'cache-control': 'no-store' } },
+				),
 			);
 		}
+	}
+}
+
+/**
+ * The handler's generic client-input refusal, as its owner-page forwarding routes give before any
+ * effect (`fleet-admin-forwarding.ts`): 400 `invalid-request`, no store, no cookie.
+ */
+function invalidRequestResponse(): Response {
+	return Response.json(
+		{ error: 'invalid-request' },
+		{ status: 400, headers: { 'cache-control': 'no-store' } },
+	);
+}
+
+/**
+ * The client an `Authorization` header names as a Basic credential, decoded by the provider's own
+ * decoder (`@better-auth/core` 1.7.11 `dist/oauth2/basic-credentials.mjs:48-60`, which the
+ * oauth-provider's client authentication also uses), so this wrapper and the provider never disagree
+ * on which client a header names. A header that decoder refuses names none here, and the provider
+ * then refuses it itself as `invalid_client` with a Basic challenge (oauth-provider 1.7.11
+ * `dist/utils-vIo_wPv5.mjs:607-621`).
+ */
+function basicClientId(authorization: string | null): string | undefined {
+	if (authorization === null) return undefined;
+	try {
+		return decodeBasicCredentials(authorization).clientId;
+	} catch {
+		return undefined;
 	}
 }

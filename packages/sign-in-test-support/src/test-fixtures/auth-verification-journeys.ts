@@ -2,6 +2,8 @@ import path from 'node:path';
 
 import { z } from 'zod';
 
+import type { AuthHarnessRequestLimits } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
+
 export const revisionFencePattern =
 	'authorization (?:fence|backfill|delivery):|person-fleet token:|drain:|fleet call:|central (?:empty:|forgot(?::| \\(WS7))|R-retrysignal \\((?:relay|forwarding)\\):';
 const revisionFenceNames = new RegExp(revisionFencePattern, 'u');
@@ -44,6 +46,38 @@ export const admittedBackingFailureReceipts: Readonly<Record<AuthJourney, number
 	organization: 0,
 	'revision-fence': 0,
 };
+
+/** Exactly one service-page and one passkey workerd budget case use named clocked stand-ins. */
+export function requireAdmittedRequestLimitCounters(props: {
+	readonly journey: AuthJourney;
+	readonly signInHost: 'workerd' | 'node';
+	readonly requestLimits: readonly AuthHarnessRequestLimits[];
+}): void {
+	const realCounter = props.signInHost === 'node' ? 'node-fixed-window' : 'cloudflare-real-binding';
+	const hostBackingFailure =
+		props.signInHost === 'node' ? 'node-counter-throws' : 'cloudflare-binding-rejects';
+	const standIns = props.requestLimits.filter(
+		(limits) => limits.outerCounter === 'cloudflare-controlled-binding-stand-in',
+	);
+	const expectedPerCase = props.journey === 'people' && props.signInHost === 'workerd' ? 1 : 0;
+	const armedFailures = props.requestLimits.filter((limits) => limits.backingFailure !== 'none');
+	if (
+		standIns.length !== expectedPerCase * 2 ||
+		standIns.filter((limits) => limits.proofCase === 'service-page-exact-budget').length !==
+			expectedPerCase ||
+		standIns.filter((limits) => limits.proofCase === 'passkey-exact-budget').length !==
+			expectedPerCase ||
+		standIns.some((limits) => limits.backingFailure !== 'none') ||
+		armedFailures.length !== admittedBackingFailureReceipts[props.journey] ||
+		armedFailures.some((limits) => limits.backingFailure !== hostBackingFailure) ||
+		props.requestLimits.some(
+			(limits) =>
+				limits.outerCounter !== realCounter &&
+				limits.outerCounter !== 'cloudflare-controlled-binding-stand-in',
+		)
+	)
+		throw new Error('Harness request counters differ from the admitted journey counters');
+}
 
 /** Workerd-only callers; Node startup backfill and no-interval wiring are checked separately. */
 export const workerdOnlyCallerCases = [
@@ -132,10 +166,15 @@ export function authJourneyFiles(journey: AuthJourney): readonly string[] {
 			`${testSource}/organization-upgrade.host.e2e.test.ts`,
 			`${testSource}/people-factor-enrollment.host.e2e.test.ts`,
 			`${testSource}/people-passkey-confirmation.host.e2e.test.ts`,
+			`${testSource}/people-passkey-sign-in.host.e2e.test.ts`,
 			`${testSource}/people-passkey-page.host.e2e.test.ts`,
 			`${testSource}/people-organizations.host.e2e.test.ts`,
 			`${testSource}/people-organization-provisioning.host.e2e.test.ts`,
 			`${testSource}/people-owner-page.host.e2e.test.ts`,
+			`${testSource}/people-organization-context.host.e2e.test.ts`,
+			`${testSource}/people-membership-lookup.host.e2e.test.ts`,
+			`${testSource}/people-organization-list.host.e2e.test.ts`,
+			`${testSource}/people-organization-browser.host.e2e.test.ts`,
 			`${testSource}/people-record-faults.host.e2e.test.ts`,
 			`${testSource}/people-request-limits.host.e2e.test.ts`,
 			`${testSource}/sign-in-storage.host.e2e.test.ts`,

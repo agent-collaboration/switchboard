@@ -1,10 +1,6 @@
 import type { JsonValue } from '@agent-collaboration/tool-access/contracts';
 
-const credentialPatterns = [
-	/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
-	/\bBasic\s+[A-Za-z0-9._~+/=-]+/gi,
-	/\b(api[_-]?key|token|password|secret)=([^&\s]+)/gi,
-];
+import { findCredentialTextMatches } from '#upstream-mcp-connectors/credential-text-matches';
 
 export interface RedactionOptions {
 	readonly exactValues?: readonly string[];
@@ -23,22 +19,28 @@ export function isCredentialConfigKey(key: string): boolean {
 	);
 }
 
-function redactExactValues(text: string, exactValues: readonly string[]): string {
-	return exactValues
-		.filter((value) => value.length > 0)
-		.reduce((currentText, value) => currentText.split(value).join('[REDACTED]'), text);
+function redactCredentialSpans(
+	text: string,
+	exactValues: readonly string[],
+	includePatterns: boolean,
+): string {
+	const { spans } = findCredentialTextMatches({ text, exactValues, includePatterns });
+	const fragments: string[] = [];
+	let cursor = 0;
+	for (const span of spans) {
+		fragments.push(text.slice(cursor, span.start), '[REDACTED]');
+		cursor = span.end;
+	}
+	fragments.push(text.slice(cursor));
+	return fragments.join('');
 }
 
 export function redactExactCredentialText(text: string, options: RedactionOptions = {}): string {
-	return redactExactValues(text, options.exactValues ?? []);
+	return redactCredentialSpans(text, options.exactValues ?? [], false);
 }
 
 export function redactCredentialText(text: string, options: RedactionOptions = {}): string {
-	const patternRedactedText = credentialPatterns.reduce(
-		(current, pattern) => current.replace(pattern, '[REDACTED]'),
-		text,
-	);
-	return redactExactValues(patternRedactedText, options.exactValues ?? []);
+	return redactCredentialSpans(text, options.exactValues ?? [], true);
 }
 
 function redactJsonValue(value: unknown, options: RedactionOptions, keyHint?: string): unknown {
@@ -46,6 +48,10 @@ function redactJsonValue(value: unknown, options: RedactionOptions, keyHint?: st
 		return keyHint && isCredentialConfigKey(keyHint)
 			? '[REDACTED]'
 			: redactCredentialText(value, options);
+	}
+
+	if (typeof value === 'number' && options.exactValues?.includes(String(value))) {
+		return '[REDACTED]';
 	}
 
 	if (Array.isArray(value)) {
@@ -56,9 +62,10 @@ function redactJsonValue(value: unknown, options: RedactionOptions, keyHint?: st
 		return value;
 	}
 
+	// Two keys that redact to the same text collapse; the earlier value is dropped.
 	return Object.fromEntries(
 		Object.entries(value).map(([key, childValue]) => [
-			key,
+			redactCredentialText(key, options),
 			redactJsonValue(childValue, options, key),
 		]),
 	);
@@ -67,6 +74,10 @@ function redactJsonValue(value: unknown, options: RedactionOptions, keyHint?: st
 function redactExactJsonValue(value: unknown, options: RedactionOptions): unknown {
 	if (typeof value === 'string') {
 		return redactExactCredentialText(value, options);
+	}
+
+	if (typeof value === 'number' && options.exactValues?.includes(String(value))) {
+		return '[REDACTED]';
 	}
 
 	if (Array.isArray(value)) {
@@ -79,7 +90,7 @@ function redactExactJsonValue(value: unknown, options: RedactionOptions): unknow
 
 	return Object.fromEntries(
 		Object.entries(value).map(([key, childValue]) => [
-			key,
+			redactExactCredentialText(key, options),
 			redactExactJsonValue(childValue, options),
 		]),
 	);

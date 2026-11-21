@@ -1,11 +1,15 @@
 import { callAuthProofBarrier } from '#sign-in-test-support/test-fixtures/auth-proof-barrier-client';
-import type { PreparedDriverCall } from '#sign-in-test-support/test-fixtures/database-fault-identity';
+import {
+	organizationReadProjection,
+	type PreparedDriverCall,
+} from '#sign-in-test-support/test-fixtures/database-fault-identity';
 import {
 	fleetSnapshotHoldPoint,
 	isPersonFleetSnapshotRead,
 	type FleetSnapshotProbe,
 } from '#sign-in-test-support/test-fixtures/fleet-snapshot-proof';
 import { requireSignedAgentProjection } from '#sign-in-test-support/test-fixtures/native-signature-observer';
+import type { OrganizationReadProbe } from '#sign-in-test-support/test-fixtures/organization-read-proof';
 import {
 	personSessionReadKind,
 	type PersonConfirmationProbe,
@@ -13,6 +17,11 @@ import {
 
 export type DatabaseReadHold =
 	| { readonly kind: 'none' }
+	| {
+			readonly kind: 'organization-read';
+			readonly bindings: AuthWorkerEnv;
+			readonly probe: OrganizationReadProbe;
+	  }
 	| {
 			readonly kind: 'token';
 			readonly bindings: AuthWorkerEnv;
@@ -63,6 +72,7 @@ export function createDatabaseReadHold(hold: DatabaseReadHold): {
 	readonly beforeRead: (call: PreparedDriverCall) => Promise<void>;
 	readonly afterRead: (call: PreparedDriverCall) => Promise<void>;
 } {
+	let organizationReadHeld = false;
 	let registrationReads = 0;
 	let ownerReads = 0;
 	let confirmation:
@@ -106,6 +116,25 @@ export function createDatabaseReadHold(hold: DatabaseReadHold): {
 			}
 		},
 		async afterRead(call): Promise<void> {
+			if (hold.kind === 'organization-read') {
+				const expectedProjection =
+					hold.probe.kind === 'lookup' ? 'membership-facts' : 'people-members';
+				if (
+					organizationReadHeld ||
+					organizationReadProjection(call) !== expectedProjection ||
+					!call.parameters.includes(hold.probe.organizationId)
+				)
+					return;
+				organizationReadHeld = true;
+				await callAuthProofBarrier({
+					bindings: hold.bindings,
+					channel: 'hold',
+					operation: 'arrive',
+					key: hold.probe.key,
+					event: { point: 'organization-read', kind: hold.probe.kind },
+				});
+				return;
+			}
 			if (hold.kind === 'fleet-snapshot') {
 				if (!isPersonFleetSnapshotRead(call)) return;
 				if (hold.probe.mode === 'advance')

@@ -3,10 +3,11 @@ import { createRequire } from 'node:module';
 import { z } from 'zod';
 
 export interface IsolatedPageDom {
-	readonly window: Pick<Window, 'document' | 'close'> &
+	readonly window: Pick<Window, 'document' | 'close' | 'addEventListener' | 'dispatchEvent'> &
 		Pick<
 			typeof globalThis,
 			| 'MutationObserver'
+			| 'Event'
 			| 'FormData'
 			| 'HTMLFormElement'
 			| 'HTMLButtonElement'

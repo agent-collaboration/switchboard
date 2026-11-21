@@ -1,3 +1,4 @@
+import { epochMillisecondsSchema } from '@agent-collaboration/sign-in-core';
 import { createSignInHttpHandler } from '@agent-collaboration/sign-in-core/better-auth';
 import productionSignInWorker from '@agent-collaboration/sign-in-host-cloudflare';
 import {
@@ -30,6 +31,7 @@ import { readFleetSnapshotProbe } from '#sign-in-test-support/test-fixtures/flee
 import { handleIntrospectionClientFixture } from '#sign-in-test-support/test-fixtures/introspection-client-fixture';
 import { withNativeSigningObservation } from '#sign-in-test-support/test-fixtures/native-signature-observer';
 import { handleOrganizationKeyChangeProofRequest } from '#sign-in-test-support/test-fixtures/organization-key-change-proof';
+import { readOrganizationReadProbe } from '#sign-in-test-support/test-fixtures/organization-read-proof';
 import { readPersonConfirmationProbe } from '#sign-in-test-support/test-fixtures/person-confirmation-proof';
 import { recordingD1Database } from '#sign-in-test-support/test-fixtures/recording-d1-database';
 
@@ -67,7 +69,9 @@ export async function handleAuthProofRequest(
 		},
 	);
 	if (authorizationDrain !== null) return authorizationDrain;
-	const limiterControl = handleAuthProofLimiterControl(request);
+	const limiterControl = handleAuthProofLimiterControl(request, incomingBindings, {
+		now: () => epochMillisecondsSchema.parse(readControlledWorkerTime()),
+	});
 	if (limiterControl !== null) return limiterControl;
 	const drain = handleCaptchaObservationDrain(request);
 	if (drain !== null) return drain;
@@ -84,6 +88,9 @@ export async function handleAuthProofRequest(
 	);
 	if (keyChange !== null) return keyChange;
 	let hold: DatabaseReadHold = { kind: 'none' };
+	const organizationRead = readOrganizationReadProbe(request);
+	if (organizationRead !== null)
+		hold = { kind: 'organization-read', bindings, probe: organizationRead };
 	const fleetSnapshot = readFleetSnapshotProbe(request);
 	if (fleetSnapshot !== null)
 		hold = {

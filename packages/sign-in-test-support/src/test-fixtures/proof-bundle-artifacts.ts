@@ -73,6 +73,7 @@ export async function proofSourceIdentities(
 		'packages/sign-in-test-support/src/test-fixtures/local-auth-harness.ts',
 		'packages/sign-in-test-support/src/test-fixtures/auth-proof-application.ts',
 		'packages/sign-in-test-support/src/test-fixtures/node-auth-proof-host.ts',
+		'packages/sign-in-test-support/src/test-fixtures/passkey-release-failure.ts',
 		'packages/sign-in-test-support/src/test-fixtures/auth-proof-tokens.ts',
 		'packages/sign-in-test-support/src/test-fixtures/authorization-drain-proof.ts',
 		'packages/sign-in-test-support/src/test-fixtures/central-forgot-host.ts',
@@ -284,15 +285,19 @@ export const authHarnessReadinessSchema = z.discriminatedUnion('ready', [
 ]);
 export type AuthHarnessReadiness = z.infer<typeof authHarnessReadinessSchema>;
 
-export const authHarnessRequestLimitsSchema = z.strictObject({
+const requestLimitReceiptFields = z.strictObject({
 	backingFailure: z.enum(['none', 'node-counter-throws', 'cloudflare-binding-rejects']),
-	outerCounter: z.enum([
-		'node-fixed-window',
-		'cloudflare-real-binding',
-		'cloudflare-controlled-binding-stand-in',
-	]),
 	observations: z.array(requestLimitObservationSchema),
 });
+export const authHarnessRequestLimitsSchema = z.discriminatedUnion('outerCounter', [
+	requestLimitReceiptFields.extend({
+		outerCounter: z.enum(['node-fixed-window', 'cloudflare-real-binding']),
+	}),
+	requestLimitReceiptFields.extend({
+		outerCounter: z.literal('cloudflare-controlled-binding-stand-in'),
+		proofCase: z.enum(['service-page-exact-budget', 'passkey-exact-budget']),
+	}),
+]);
 export type AuthHarnessRequestLimits = z.infer<typeof authHarnessRequestLimitsSchema>;
 
 export async function recordProofHarness(

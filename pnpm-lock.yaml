@@ -75,6 +75,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       vitest:
         specifier: ^4.1.5
         version: 4.1.5(@opentelemetry/api@1.9.1)(@types/node@25.6.2)(jsdom@27.4.0(@noble/hashes@2.4.0)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(msw@2.13.4(@types/node@25.6.2)(typescript@6.0.3))(vite@8.2.2(@types/node@25.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
@@ -152,6 +155,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       vitest:
         specifier: ^4.1.5
         version: 4.1.5(@opentelemetry/api@1.9.1)(@types/node@25.6.2)(jsdom@27.4.0(@noble/hashes@2.4.0)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(msw@2.13.4(@types/node@25.6.2)(typescript@6.0.3))(vite@8.2.2(@types/node@25.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
@@ -208,6 +214,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
@@ -221,6 +230,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       vitest:
         specifier: ^4.1.5
         version: 4.1.5(@opentelemetry/api@1.9.1)(@types/node@25.6.2)(jsdom@27.4.0(@noble/hashes@2.4.0)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(msw@2.13.4(@types/node@25.6.2)(typescript@6.0.3))(vite@8.2.2(@types/node@25.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
@@ -245,6 +257,9 @@ importers:
       '@better-auth/passkey':
         specifier: 1.7.11
         version: 1.7.11(@better-auth/core@1.7.11(@better-auth/utils@0.5.0)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.2(zod@4.4.3))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.5))(@better-auth/utils@0.5.0)(@better-fetch/fetch@1.3.2)(better-auth@1.7.11(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20250927.0)(@opentelemetry/api@1.9.1)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(kysely@0.29.6))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@4.1.5(@opentelemetry/api@1.9.1)(@types/node@25.6.2)(jsdom@27.4.0(@noble/hashes@2.4.0)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(msw@2.13.4(@types/node@25.6.2)(typescript@6.0.3))(vite@8.2.2(@types/node@25.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))))(better-call@1.4.2(zod@4.4.3))(nanostores@1.5.5)
+      '@better-fetch/fetch':
+        specifier: 1.3.2
+        version: 1.3.2
       '@simplewebauthn/server':
         specifier: 13.3.3
         version: 13.3.3
@@ -276,6 +291,9 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       '@tailwindcss/cli':
         specifier: ^4.3.3
         version: 4.3.3
@@ -451,6 +469,9 @@ importers:
       jsonc-parser:
         specifier: 3.3.1
         version: 3.3.1
+      playwright:
+        specifier: 1.61.1
+        version: 1.61.1
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -476,6 +497,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       vitest:
         specifier: ^4.1.5
         version: 4.1.5(@opentelemetry/api@1.9.1)(@types/node@25.6.2)(jsdom@27.4.0(@noble/hashes@2.4.0)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(msw@2.13.4(@types/node@25.6.2)(typescript@6.0.3))(vite@8.2.2(@types/node@25.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
@@ -562,6 +586,9 @@ importers:
       '@agent-vm/gateway-control-contracts':
         specifier: npm:@agent-vm/gateway-control-contracts@0.0.153
         version: 0.0.153
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -599,6 +626,9 @@ importers:
       '@agent-collaboration/tool-host-node':
         specifier: workspace:*
         version: link:../tool-host-node
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -694,6 +724,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@hegeldev/hegel':
+        specifier: 0.4.10
+        version: 0.4.10
       '@hono/node-server':
         specifier: 2.0.10
         version: 2.0.10(hono@4.12.34)
@@ -4278,6 +4311,11 @@ packages:
     resolution: {integrity: sha512-KYAb4c9BJQI6QqGKthV68OHe0badztdXJWKo0WtBA9IuCFPTKvE5ZdUBglP833aMjhaSPNO4A5j/EkzZtGlKjA==}
     engines: {node: '>=14.14'}
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
@@ -5069,6 +5107,16 @@ packages:
   pkg-up@3.1.0:
     resolution: {integrity: sha512-nDywThFk1i4BQK4twPQ6TA4RT8bDY96yeuCVBWL3ePARCiEKDRSrNGbFIgUJpLp+XeIR65v8ra7WuJOFUBtkMA==}
     engines: {node: '>=8'}
+
+  playwright-core@1.61.1:
+    resolution: {integrity: sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.61.1:
+    resolution: {integrity: sha512-DWnY5o3YbLWK4GovuAVwpqL+1VwGNdUGrRr++8j8PtQQzvAVZUIMjKQ90fY689sEJZJBbZVw1rXaOKSTitkzPQ==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   postcss-selector-parser@7.1.7:
     resolution: {integrity: sha512-wWBro/7hJ40ye6TPiXkUQoXKCw23xSsjriUvqd7Uls9Sso3oLiON1flc18cCdnjgCRXw4fBVqUJJeOdDTh3P3g==}
@@ -8917,6 +8965,9 @@ snapshots:
       jsonfile: 6.2.1
       universalify: 2.0.1
 
+  fsevents@2.3.2:
+    optional: true
+
   fsevents@2.3.3:
     optional: true
 
@@ -9618,6 +9669,14 @@ snapshots:
   pkg-up@3.1.0:
     dependencies:
       find-up: 3.0.0
+
+  playwright-core@1.61.1: {}
+
+  playwright@1.61.1:
+    dependencies:
+      playwright-core: 1.61.1
+    optionalDependencies:
+      fsevents: 2.3.2
 
   postcss-selector-parser@7.1.7:
     dependencies:
