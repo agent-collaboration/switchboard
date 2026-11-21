@@ -97,8 +97,15 @@ export async function observeEndpointSignOutOrigin(browser: NavigationBrowser): 
 		headers: { cookie: ownerCookie, origin: `${harness.issuer}/origin-proof` },
 	});
 	expect(refusal.status).toBe(403);
-	expect(await refusal.json()).toEqual({ error: 'switchboard-sign-out-origin-refused' });
+	expect(await refusal.json()).toEqual({ error: 'not-allowed' });
 	expect(refusal.headers.getSetCookie()).toEqual([]);
+	const invalidCookieRefusal = await harness.auth(signOutPath, {
+		method: 'POST',
+		headers: { cookie: changedSignature(ownerCookie), origin: `${harness.issuer}/origin-proof` },
+	});
+	expect(invalidCookieRefusal.status).toBe(403);
+	expect(await invalidCookieRefusal.json()).toEqual({ error: 'not-allowed' });
+	expect(invalidCookieRefusal.headers.getSetCookie()).toEqual([]);
 	// The first lookup still hits the one-use driver fault. If the
 	// refused request consumed it, the matching legitimate POST deletes the row.
 	const allowed = await harness.auth(signOutPath, {
@@ -112,15 +119,21 @@ export async function observeEndpointSignOutOrigin(browser: NavigationBrowser): 
 }
 
 function changedSignature(cookie: string): string {
-	const signed = signedBrowserToken(cookie);
-	if (signed === null || !cookie.includes(signed)) throw new Error('Fixture has no signed cookie');
+	const sessionPair = cookie
+		.split(';')
+		.map((pair) => pair.trim())
+		.find((pair) => /^(?:__Secure-)?better-auth[.-]session_token=/u.test(pair));
+	if (sessionPair === undefined) throw new Error('Fixture has no signed cookie');
+	const valueStart = sessionPair.indexOf('=') + 1;
+	const signed = decodeURIComponent(sessionPair.slice(valueStart));
 	const signatureStart = signed.lastIndexOf('.') + 1;
 	if (signatureStart <= 0 || signatureStart >= signed.length)
 		throw new Error('Fixture has no signature');
 	const different = signed[signatureStart] === 'A' ? 'B' : 'A';
+	const altered = `${signed.slice(0, signatureStart)}${different}${signed.slice(signatureStart + 1)}`;
 	return cookie.replace(
-		signed,
-		`${signed.slice(0, signatureStart)}${different}${signed.slice(signatureStart + 1)}`,
+		sessionPair,
+		`${sessionPair.slice(0, valueStart)}${encodeURIComponent(altered)}`,
 	);
 }
 
