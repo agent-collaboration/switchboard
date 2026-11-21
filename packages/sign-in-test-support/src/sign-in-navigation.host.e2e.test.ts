@@ -28,6 +28,7 @@ import {
 	observeEndpointSignOutOrigin,
 	observeExpiredAndInvalidSignOut,
 	observeExpiredShellEntry,
+	observeInvalidShellCookie,
 	observeNavigationSignOut,
 } from '#sign-in-test-support/test-fixtures/sign-in-navigation-sign-out';
 
@@ -37,6 +38,7 @@ const hosts = ['node', 'cloudflare'] as const;
 const cases = [
 	['N1/N2 exact owner and member links and direct People refusals', observeNavigationPermissions],
 	['B1 expired shell session redirects without a write', observeExpiredShellEntry],
+	['C1 invalid shell cookie is refused without a write', observeInvalidShellCookie],
 	['B2 sign-out origin refusal precedes token lookup', observeEndpointSignOutOrigin],
 	[
 		'B3 active member role displaces inactive ownership and Back is refused',

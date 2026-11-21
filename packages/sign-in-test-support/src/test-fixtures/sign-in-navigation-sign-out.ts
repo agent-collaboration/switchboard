@@ -75,6 +75,46 @@ export async function observeExpiredShellEntry(browser: NavigationBrowser): Prom
 	});
 }
 
+export async function observeInvalidShellCookie(browser: NavigationBrowser): Promise<void> {
+	const { harness, ownerCookie } = browser;
+	const current = await readCurrentBrowserSession({
+		cookie: ownerCookie,
+		database: harness.database,
+	});
+	async function readSessionFacts(): Promise<unknown> {
+		return (
+			await harness.database
+				.select({
+					id: session.id,
+					personId: session.userId,
+					activeOrganizationId: session.activeOrganizationId,
+					expiresAt: session.expiresAt,
+					updatedAt: session.updatedAt,
+					confirmedAt: session.secondFactorAt,
+					confirmationMethod: session.secondFactorMethod,
+				})
+				.from(session)
+				.where(eq(session.id, current.id))
+		)[0];
+	}
+	const sessionBefore = await readSessionFacts();
+	const retainedRevision = await readRetainedRevision(browser);
+	const invalid = changedSignature(ownerCookie);
+	await runNavigationSteps(['/me', '/people'], async (route): Promise<void> => {
+		const admitted = await harness.auth(route, { headers: { cookie: ownerCookie } });
+		expect(admitted.status).toBe(200);
+		const refused = await harness.auth(route, { headers: { cookie: invalid } });
+		expect(refused.status).toBe(303);
+		expect(refused.headers.get('location')).toBe('/sign-in');
+		expect(refused.headers.getSetCookie()).toEqual([]);
+		expect(
+			await readCurrentBrowserSession({ cookie: ownerCookie, database: harness.database }),
+		).toEqual(current);
+		expect(await readSessionFacts()).toEqual(sessionBefore);
+		expect(await readRetainedRevision(browser)).toBe(retainedRevision);
+	});
+}
+
 export async function observeEndpointSignOutOrigin(browser: NavigationBrowser): Promise<void> {
 	const { harness, ownerCookie } = browser;
 	const current = await readCurrentBrowserSession({

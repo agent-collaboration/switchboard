@@ -1,10 +1,11 @@
 import { fileURLToPath } from 'node:url';
 
 import { member, passkey, session, twoFactor, user } from '@agent-collaboration/sign-in-core';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { expect } from 'vitest';
 import { z } from 'zod';
 
+import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import { readCurrentBrowserSession } from '#sign-in-test-support/test-fixtures/current-browser-session';
 import { loginThroughNativeOwnerCli } from '#sign-in-test-support/test-fixtures/native-cli-proof';
 import {
@@ -92,17 +93,61 @@ export async function observeFreshOwnerEnrollment(browser: FreshNavigationBrowse
 			.where(eq(member.userId, ownerId)),
 	).toEqual([{ role: 'owner' }]);
 
-	// Isolate the enrollment requirement from the organization requirement.
-	// Restore pre-enrollment factor facts in this fixture while retaining the selected membership.
+	// Remove only enrollment. A recent session confirmation and the exact
+	// selected membership survive, so either of those still passes on its own.
+	async function readSelectedSession(): Promise<unknown> {
+		return (
+			await harness.database
+				.select({
+					organizationId: session.activeOrganizationId,
+					confirmedAt: session.secondFactorAt,
+					method: session.secondFactorMethod,
+				})
+				.from(session)
+				.where(eq(session.id, ready.id))
+		)[0];
+	}
+	const selected = z
+		.object({
+			organizationId: z.uuidv7(),
+			confirmedAt: z.number().int(),
+			method: z.string().min(1),
+		})
+		.parse(await readSelectedSession());
+	expect(selected.confirmedAt).toBe(controlledSignInClock.now());
+	expect(
+		await harness.database
+			.select({ role: member.role })
+			.from(member)
+			.where(and(eq(member.userId, ownerId), eq(member.organizationId, selected.organizationId))),
+	).toEqual([{ role: 'owner' }]);
+	expect(
+		await harness.database
+			.select({ id: passkey.id })
+			.from(passkey)
+			.where(eq(passkey.userId, ownerId)),
+	).toEqual([]);
+
 	await harness.database.delete(twoFactor).where(eq(twoFactor.userId, ownerId));
 	await harness.database
 		.update(user)
 		.set({ secondFactorSetAt: null, twoFactorEnabled: false })
 		.where(eq(user.id, ownerId));
-	await harness.database
-		.update(session)
-		.set({ secondFactorAt: null, secondFactorMethod: null })
-		.where(eq(session.id, ready.id));
+	expect(await readSelectedSession()).toEqual(selected);
+	expect(
+		await harness.database
+			.select({ id: twoFactor.id })
+			.from(twoFactor)
+			.where(eq(twoFactor.userId, ownerId)),
+	).toEqual([]);
+	expect(
+		(
+			await harness.database
+				.select({ enrolledAt: user.secondFactorSetAt, enabled: user.twoFactorEnabled })
+				.from(user)
+				.where(eq(user.id, ownerId))
+		)[0],
+	).toEqual({ enrolledAt: null, enabled: false });
 	await expectSetupRedirects(readyCookie);
 }
 
