@@ -31,20 +31,26 @@ export const peopleListPath = '/api/auth/organization/people-list';
 export const peopleLookupPath = '/api/auth/organization/person-membership';
 
 export type NavigationHost = 'node' | 'cloudflare';
-export interface NavigationBrowser {
+export interface FreshNavigationBrowser {
 	readonly harness: Awaited<ReturnType<typeof startLocalAuthHarness>>;
 	readonly proof: PlaywrightBrowserPage;
+	readonly signal: AbortSignal;
+}
+export interface NavigationBrowser extends FreshNavigationBrowser {
 	readonly organization: { readonly id: string; readonly name: string };
 	readonly ownerCookie: string;
 	readonly ownerId: string;
-	readonly signal: AbortSignal;
 }
 
-export async function withNavigationBrowser(props: {
+interface NavigationBrowserRun<TBrowser> {
 	readonly host: NavigationHost;
 	readonly signal: AbortSignal;
-	readonly exercise: (browser: NavigationBrowser) => Promise<void>;
-}): Promise<void> {
+	readonly exercise: (browser: TBrowser) => Promise<void>;
+}
+
+export async function withFreshNavigationBrowser(
+	props: NavigationBrowserRun<FreshNavigationBrowser>,
+): Promise<void> {
 	const evidence = await mkdtemp(path.join(tmpdir(), `2026-11-sign-in-navigation-${props.host}-`));
 	const harness = await startLocalAuthHarness({
 		host: props.host,
@@ -55,10 +61,40 @@ export async function withNavigationBrowser(props: {
 	await withNativeBrowserCleanup(
 		async (): Promise<void> => {
 			expect(harness.signInHost).toBe(props.host);
+			proof = await launchProofBrowser({
+				evidence,
+				origin: harness.issuer,
+				width: 1280,
+				colorScheme: 'dark',
+				scenarioSignal: props.signal,
+			});
+			process.stdout.write(
+				`${JSON.stringify({ event: 'sign-in-navigation-browser', requestedHost: props.host, actualHarnessHost: harness.signInHost, evidence })}\n`,
+			);
+			await props.exercise({ harness, proof, signal: props.signal });
+		},
+		() =>
+			withNativeBrowserCleanup(
+				async (): Promise<void> => {
+					await proof?.close();
+				},
+				() => harness.close(),
+			),
+	);
+}
+
+export async function withNavigationBrowser(
+	props: NavigationBrowserRun<NavigationBrowser>,
+): Promise<void> {
+	await withFreshNavigationBrowser({
+		host: props.host,
+		signal: props.signal,
+		exercise: async (browser): Promise<void> => {
+			const { harness, proof } = browser;
 			const ownerId = await signInConfirmedPeopleBrowser({ harness, email: navigationOwnerEmail });
 			const organizationId = await ensureLocalOwnerOrganization(harness);
 			expect((await peoplePost(harness, 'set-active', { organizationId })).status).toBe(200);
-			const selected = z
+			const organization = z
 				.object({ id: z.uuidv7(), name: z.string() })
 				.parse(
 					(
@@ -70,38 +106,14 @@ export async function withNavigationBrowser(props: {
 				);
 			await harness.settleDeferredWork();
 			const ownerCookie = harness.cookie();
-			proof = await launchProofBrowser({
-				evidence,
-				origin: harness.issuer,
-				width: 1280,
-				colorScheme: 'dark',
-				scenarioSignal: props.signal,
-			});
 			await installOrganizationBrowserCookie({
 				page: proof,
 				issuer: harness.issuer,
 				cookie: ownerCookie,
 			});
-			process.stdout.write(
-				`${JSON.stringify({ event: 'sign-in-navigation-browser', requestedHost: props.host, actualHarnessHost: harness.signInHost, evidence })}\n`,
-			);
-			await props.exercise({
-				harness,
-				proof,
-				organization: selected,
-				ownerCookie,
-				ownerId,
-				signal: props.signal,
-			});
+			await props.exercise({ ...browser, organization, ownerCookie, ownerId });
 		},
-		() =>
-			withNativeBrowserCleanup(
-				async (): Promise<void> => {
-					await proof?.close();
-				},
-				() => harness.close(),
-			),
-	);
+	});
 }
 
 export async function visitNavigation(

@@ -1,4 +1,4 @@
-import { and, eq, exists, gt, notExists, or, sql } from 'drizzle-orm';
+import { and, eq, exists, getTableColumns, gt, notExists, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { SignInPlatform } from '#sign-in-core/contracts/sign-in-platform';
@@ -6,6 +6,8 @@ import { createAuthorizationFenceMutations } from '#sign-in-core/storage/authori
 import {
 	storedSessionSchema,
 	storedUserSchema,
+	tokenlessPersonSessionSchema,
+	type TokenlessPersonSession,
 	type LiveOwnerSession,
 	type PersonSessionRecords,
 	type SessionRowPresence,
@@ -140,6 +142,28 @@ export function createPersonSessionStore(props: {
 			return membership.kind === 'available'
 				? availableStoreValue(membership.value.length === 1)
 				: membership;
+		},
+		async readLiveSessionByToken(token): Promise<SignInStoreResult<TokenlessPersonSession | null>> {
+			const now = new Date(props.platform.clock.now());
+			const { token: _sessionToken, ...sessionColumns } = getTableColumns(session);
+			return readStoreValue(
+				async () =>
+					(
+						await database()
+							.select({ session: sessionColumns, user: getTableColumns(user) })
+							.from(session)
+							.innerJoin(user, eq(session.userId, user.id))
+							.where(
+								and(
+									eq(session.token, token),
+									gt(session.expiresAt, now),
+									eq(user.emailVerified, true),
+								),
+							)
+							.limit(1)
+					)[0] ?? null,
+				tokenlessPersonSessionSchema.nullable(),
+			);
 		},
 		async sessionRowByToken(token): Promise<SignInStoreResult<SessionRowPresence>> {
 			const row = await readStoreValue(

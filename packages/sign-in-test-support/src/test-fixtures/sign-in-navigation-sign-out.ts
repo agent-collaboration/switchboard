@@ -7,12 +7,14 @@ import { and, eq } from 'drizzle-orm';
 import { expect } from 'vitest';
 import { z } from 'zod';
 
+import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import { readCurrentBrowserSession } from '#sign-in-test-support/test-fixtures/current-browser-session';
 import { organizationBrowserCookie } from '#sign-in-test-support/test-fixtures/organization-browser-transport';
 import { signInConfirmedPeopleBrowser } from '#sign-in-test-support/test-fixtures/people-browser-login';
 import { waitForBrowserEvent } from '#sign-in-test-support/test-fixtures/playwright-network';
 import {
 	navigationOwnerEmail,
+	runNavigationSteps,
 	signOutPath,
 	visitNavigation,
 	type NavigationBrowser,
@@ -31,6 +33,143 @@ async function sessionRow(
 		.from(session)
 		.where(eq(session.id, id));
 	return z.object({ id: z.uuidv7(), token: z.string().min(1) }).parse(rows[0]);
+}
+
+async function readRetainedRevision(browser: NavigationBrowser): Promise<number> {
+	const rows = await browser.harness.database
+		.select({ revision: personOrganizationAuthorizationRevisions.revision })
+		.from(personOrganizationAuthorizationRevisions)
+		.where(
+			and(
+				eq(personOrganizationAuthorizationRevisions.personId, browser.ownerId),
+				eq(personOrganizationAuthorizationRevisions.organizationId, browser.organization.id),
+			),
+		);
+	return z.object({ revision: z.number().int() }).parse(rows[0]).revision;
+}
+
+export async function observeExpiredShellEntry(browser: NavigationBrowser): Promise<void> {
+	const { harness, ownerCookie } = browser;
+	const current = await readCurrentBrowserSession({
+		cookie: ownerCookie,
+		database: harness.database,
+	});
+	const expiredAt = new Date(controlledSignInClock.now() - 1);
+	await harness.database
+		.update(session)
+		.set({ expiresAt: expiredAt })
+		.where(eq(session.id, current.id));
+	const retainedRevision = await readRetainedRevision(browser);
+	await runNavigationSteps(['/me', '/people'], async (route): Promise<void> => {
+		const refused = await harness.auth(route, { headers: { cookie: ownerCookie } });
+		expect(refused.status).toBe(303);
+		expect(refused.headers.get('location')).toBe('/sign-in');
+		expect(refused.headers.getSetCookie()).toEqual([]);
+		expect(
+			await harness.database
+				.select({ id: session.id, expiresAt: session.expiresAt })
+				.from(session)
+				.where(eq(session.id, current.id)),
+		).toEqual([{ id: current.id, expiresAt: expiredAt }]);
+		expect(await readRetainedRevision(browser)).toBe(retainedRevision);
+	});
+}
+
+export async function observeEndpointSignOutOrigin(browser: NavigationBrowser): Promise<void> {
+	const { harness, ownerCookie } = browser;
+	const current = await readCurrentBrowserSession({
+		cookie: ownerCookie,
+		database: harness.database,
+	});
+	const row = await sessionRow(browser, current.id);
+	const retainedRevision = await readRetainedRevision(browser);
+	await harness.setDatabaseFault({
+		operation: 'select',
+		table: 'session',
+		projection: 'session-id-by-token',
+		key: row.token,
+		once: true,
+	});
+	// The provider canonicalizes trusted HTTP origins with URL.origin. Its
+	// middleware admits this synthetic path-qualified origin; our guard must reject the actual header.
+	const refusal = await harness.auth(signOutPath, {
+		method: 'POST',
+		headers: { cookie: ownerCookie, origin: `${harness.issuer}/origin-proof` },
+	});
+	expect(refusal.status).toBe(403);
+	expect(await refusal.json()).toEqual({ error: 'switchboard-sign-out-origin-refused' });
+	expect(refusal.headers.getSetCookie()).toEqual([]);
+	// The first lookup still hits the one-use driver fault. If the
+	// refused request consumed it, the matching legitimate POST deletes the row.
+	const allowed = await harness.auth(signOutPath, {
+		method: 'POST',
+		headers: { cookie: ownerCookie },
+	});
+	expect(allowed.status).toBe(503);
+	expect(allowed.headers.getSetCookie()).toEqual([]);
+	expect((await sessionRow(browser, current.id)).id).toBe(current.id);
+	expect(await readRetainedRevision(browser)).toBe(retainedRevision);
+}
+
+function changedSignature(cookie: string): string {
+	const signed = signedBrowserToken(cookie);
+	if (signed === null || !cookie.includes(signed)) throw new Error('Fixture has no signed cookie');
+	const signatureStart = signed.lastIndexOf('.') + 1;
+	if (signatureStart <= 0 || signatureStart >= signed.length)
+		throw new Error('Fixture has no signature');
+	const different = signed[signatureStart] === 'A' ? 'B' : 'A';
+	return cookie.replace(
+		signed,
+		`${signed.slice(0, signatureStart)}${different}${signed.slice(signatureStart + 1)}`,
+	);
+}
+
+export async function observeExpiredAndInvalidSignOut(browser: NavigationBrowser): Promise<void> {
+	const { harness, ownerCookie } = browser;
+	const current = await readCurrentBrowserSession({
+		cookie: ownerCookie,
+		database: harness.database,
+	});
+	const retainedRevision = await readRetainedRevision(browser);
+	const invalid = await harness.auth(signOutPath, {
+		method: 'POST',
+		headers: { cookie: changedSignature(ownerCookie) },
+	});
+	expect(invalid.status).toBe(401);
+	expect(invalid.headers.getSetCookie()).toEqual([]);
+	expect((await sessionRow(browser, current.id)).id).toBe(current.id);
+	expect(await readRetainedRevision(browser)).toBe(retainedRevision);
+
+	const expiredAt = new Date(controlledSignInClock.now() - 1);
+	await harness.database
+		.update(session)
+		.set({ expiresAt: expiredAt })
+		.where(eq(session.id, current.id));
+	const exactExpiry = (
+		await harness.database
+			.select({ expiry: session.expiresAt })
+			.from(session)
+			.where(eq(session.id, current.id))
+	)[0];
+	expect(exactExpiry?.expiry).toEqual(expiredAt);
+	const signedOut = await harness.auth(signOutPath, {
+		method: 'POST',
+		headers: { cookie: ownerCookie },
+	});
+	expect(signedOut.status).toBe(303);
+	expect(signedOut.headers.get('location')).toBe('/sign-in');
+	expect(
+		await harness.database
+			.select({ id: session.id })
+			.from(session)
+			.where(eq(session.id, current.id)),
+	).toEqual([]);
+	expect(await readRetainedRevision(browser)).toBe(retainedRevision + 1);
+	expect(
+		signedOut.headers
+			.getSetCookie()
+			.some((cookie) => cookie.includes('session_token=') && /Max-Age=0/iu.test(cookie)),
+	).toBe(true);
 }
 
 async function observeSignOutStatus(

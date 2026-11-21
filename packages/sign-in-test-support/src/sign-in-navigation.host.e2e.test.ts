@@ -3,6 +3,7 @@ import { it } from 'vitest';
 import { useControlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-node-test-clock';
 import { runProofBrowserScenario } from '#sign-in-test-support/test-fixtures/playwright-browser';
 import {
+	withFreshNavigationBrowser,
 	withNavigationBrowser,
 	type NavigationBrowser,
 } from '#sign-in-test-support/test-fixtures/sign-in-navigation-browser';
@@ -12,22 +13,39 @@ import {
 	observePasskeyLayout,
 } from '#sign-in-test-support/test-fixtures/sign-in-navigation-layout';
 import {
+	observeActiveOrganizationPermissions,
 	observeNavigationPermissions,
 	observeNavigationSwitch,
 	observePeopleInShell,
 } from '#sign-in-test-support/test-fixtures/sign-in-navigation-permissions';
 import {
+	observeFreshOwnerEnrollment,
 	observeNavigationCliContinuation,
 	observeNavigationFactors,
 	observeNavigationReadiness,
 } from '#sign-in-test-support/test-fixtures/sign-in-navigation-setup';
-import { observeNavigationSignOut } from '#sign-in-test-support/test-fixtures/sign-in-navigation-sign-out';
+import {
+	observeEndpointSignOutOrigin,
+	observeExpiredAndInvalidSignOut,
+	observeExpiredShellEntry,
+	observeNavigationSignOut,
+} from '#sign-in-test-support/test-fixtures/sign-in-navigation-sign-out';
 
 useControlledSignInClock();
 
 const hosts = ['node', 'cloudflare'] as const;
 const cases = [
 	['N1/N2 exact owner and member links and direct People refusals', observeNavigationPermissions],
+	['B1 expired shell session redirects without a write', observeExpiredShellEntry],
+	['B2 sign-out origin refusal precedes token lookup', observeEndpointSignOutOrigin],
+	[
+		'B3 active member role displaces inactive ownership and Back is refused',
+		observeActiveOrganizationPermissions,
+	],
+	[
+		'S1 expired signed session is fenced and bad signature is refused',
+		observeExpiredAndInvalidSignOut,
+	],
 	[
 		'N3 committed, unanswered and refused switches with fresh readback and Back',
 		observeNavigationSwitch,
@@ -52,5 +70,18 @@ it.each(hosts.flatMap((host) => cases.map(([name, exercise]) => [name, host, exe
 	'sign-in navigation %s on %s',
 	async (_name, host, exercise): Promise<void> => {
 		await runProofBrowserScenario((signal) => withNavigationBrowser({ host, exercise, signal }));
+	},
+);
+
+it.each(hosts)(
+	'sign-in navigation S3 fresh owner completes first enrollment and organization setup on %s',
+	async (host): Promise<void> => {
+		await runProofBrowserScenario((signal) =>
+			withFreshNavigationBrowser({
+				host,
+				signal,
+				exercise: observeFreshOwnerEnrollment,
+			}),
+		);
 	},
 );

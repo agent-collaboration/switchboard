@@ -29,7 +29,10 @@ export function createSignInSignOutPlugin(props: {
 		{ method: 'POST', requireHeaders: true, disableBody: true },
 		async (context): Promise<Response> => {
 			if (!isSameOriginSignInPost(context.method, context.headers, props.issuer))
-				return Response.json({ error: 'not-allowed' }, { status: 403, headers: noStore });
+				return Response.json(
+					{ error: 'switchboard-sign-out-origin-refused' },
+					{ status: 403, headers: noStore },
+				);
 
 			try {
 				const token = await context.getSignedCookie(

@@ -1,19 +1,110 @@
 import { fileURLToPath } from 'node:url';
 
-import { passkey, twoFactor } from '@agent-collaboration/sign-in-core';
+import { member, passkey, session, twoFactor, user } from '@agent-collaboration/sign-in-core';
 import { eq } from 'drizzle-orm';
 import { expect } from 'vitest';
 import { z } from 'zod';
 
+import { readCurrentBrowserSession } from '#sign-in-test-support/test-fixtures/current-browser-session';
 import { loginThroughNativeOwnerCli } from '#sign-in-test-support/test-fixtures/native-cli-proof';
-import { installOrganizationBrowserCookie } from '#sign-in-test-support/test-fixtures/organization-browser-transport';
+import {
+	organizationBrowserCookie,
+	installOrganizationBrowserCookie,
+} from '#sign-in-test-support/test-fixtures/organization-browser-transport';
 import { signInPeopleBrowser } from '#sign-in-test-support/test-fixtures/people-browser-login';
 import {
 	navigationOwnerEmail,
 	runNavigationSteps,
 	visitNavigation,
+	type FreshNavigationBrowser,
 	type NavigationBrowser,
 } from '#sign-in-test-support/test-fixtures/sign-in-navigation-browser';
+
+export async function observeFreshOwnerEnrollment(browser: FreshNavigationBrowser): Promise<void> {
+	const { harness, proof } = browser;
+	const ownerId = await signInPeopleBrowser({ harness, email: navigationOwnerEmail });
+	const initialCookie = harness.cookie();
+	expect(
+		await harness.database
+			.select({ id: twoFactor.id })
+			.from(twoFactor)
+			.where(eq(twoFactor.userId, ownerId)),
+	).toEqual([]);
+	expect(
+		await harness.database.select({ id: member.id }).from(member).where(eq(member.userId, ownerId)),
+	).toEqual([]);
+	async function expectSetupRedirects(cookie: string): Promise<void> {
+		await runNavigationSteps(['/me', '/people'], async (route): Promise<void> => {
+			const response = await harness.auth(route, { headers: { cookie } });
+			expect(response.status).toBe(303);
+			expect(response.headers.get('location')).toBe('/owner-ready');
+		});
+	}
+	await expectSetupRedirects(initialCookie);
+	await installOrganizationBrowserCookie({
+		page: proof,
+		issuer: harness.issuer,
+		cookie: initialCookie,
+	});
+	await proof.navigate(`${harness.issuer}/owner-ready`);
+	const start = proof.page
+		.locator('[data-sign-in-island-mounted]')
+		.getByRole('button', { name: 'Set up authenticator app' });
+	await start.waitFor();
+	expect(await proof.page.getByRole('link', { name: 'Go to Me' }).count()).toBe(0);
+	const enrollment = await proof.responseTo('/api/auth/two-factor/enable', () => start.click());
+	expect(enrollment.response.status).toBe(200);
+	harness.totpAuthenticator.observeEnrollment(
+		navigationOwnerEmail,
+		await proof.readBody(enrollment),
+	);
+	const confirmation = await proof.responseTo(
+		'/api/auth/two-factor/verify-totp',
+		async (): Promise<void> =>
+			proof.enter(
+				'input[autocomplete="one-time-code"]',
+				await harness.totpAuthenticator.currentCode(navigationOwnerEmail),
+			),
+	);
+	expect(confirmation.response.status).toBe(200);
+	await proof.afterNavigation('/owner-ready', () =>
+		proof.page.getByRole('button', { name: "I've saved my recovery codes" }).click(),
+	);
+	const enrolledCookie = await organizationBrowserCookie(proof, harness.issuer);
+	await expectSetupRedirects(enrolledCookie);
+	expect(await proof.page.getByRole('link', { name: 'Go to Me' }).count()).toBe(0);
+	await proof.page.locator('#organization-name').fill('First shell organization');
+	await proof.afterNavigation('/owner-ready', () =>
+		proof.page.getByRole('button', { name: 'Create organization' }).click(),
+	);
+	await proof.page.getByRole('link', { name: 'Go to Me' }).click();
+	await proof.page.getByRole('heading', { name: 'Me', exact: true }).waitFor();
+	const readyCookie = await organizationBrowserCookie(proof, harness.issuer);
+	const ready = await readCurrentBrowserSession({
+		cookie: readyCookie,
+		database: harness.database,
+	});
+	expect(ready.personId).toBe(ownerId);
+	expect(
+		await harness.database
+			.select({ role: member.role })
+			.from(member)
+			.where(eq(member.userId, ownerId)),
+	).toEqual([{ role: 'owner' }]);
+
+	// Isolate the enrollment requirement from the organization requirement.
+	// Restore pre-enrollment factor facts in this fixture while retaining the selected membership.
+	await harness.database.delete(twoFactor).where(eq(twoFactor.userId, ownerId));
+	await harness.database
+		.update(user)
+		.set({ secondFactorSetAt: null, twoFactorEnabled: false })
+		.where(eq(user.id, ownerId));
+	await harness.database
+		.update(session)
+		.set({ secondFactorAt: null, secondFactorMethod: null })
+		.where(eq(session.id, ready.id));
+	await expectSetupRedirects(readyCookie);
+}
 
 export async function observeNavigationReadiness(browser: NavigationBrowser): Promise<void> {
 	const { harness, proof } = browser;
@@ -61,10 +152,9 @@ export async function observeNavigationCliContinuation(browser: NavigationBrowse
 			const opened = new URL(initialUrl);
 			const authorization = z.url().parse(opened.searchParams.get('authorize'));
 			const authorize = new URL(authorization);
-			const routes = [
-				['/me', opened.search],
-				['/people', authorize.search],
-			] as const;
+			const routes = (['/me', '/people'] as const).flatMap((route) =>
+				[opened.search, authorize.search].map((query) => [route, query] as const),
+			);
 			await runNavigationSteps(routes, async ([route, exactQuery]): Promise<void> => {
 				const response = await harness.auth(`${route}${exactQuery}`, {
 					headers: { cookie: ownerCookie },

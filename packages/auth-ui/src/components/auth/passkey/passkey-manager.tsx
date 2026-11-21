@@ -6,6 +6,8 @@
  * sign-in service offers its own audited removal route. */
 import { Alert } from '@agent-collaboration/tool-access-ui/ui/alert';
 import { Button } from '@agent-collaboration/tool-access-ui/ui/button';
+import { EmptyDescription } from '@agent-collaboration/tool-access-ui/ui/empty';
+import { Field, FieldError, FieldLabel } from '@agent-collaboration/tool-access-ui/ui/field';
 import { Input } from '@agent-collaboration/tool-access-ui/ui/input';
 import {
 	Item,
@@ -60,6 +62,7 @@ export function PasskeyManager({ removePasskey, labels }: PasskeyManagerProps): 
 	const [editing, setEditing] = useState<{ readonly id: string; readonly name: string } | null>(
 		null,
 	);
+	const [renameFailure, setRenameFailure] = useState<string | null>(null);
 	const [failure, setFailure] = useState<string | null>(null);
 	const [removingId, setRemovingId] = useState<string | null>(null);
 
@@ -98,7 +101,7 @@ export function PasskeyManager({ removePasskey, labels }: PasskeyManagerProps): 
 			{passkeys.isPending && <PasskeyListSkeleton />}
 			{passkeys.isError && <Alert variant="destructive">Passkeys are unavailable.</Alert>}
 			{passkeys.isSuccess && (passkeys.data ?? []).length === 0 && (
-				<p className="text-xs text-muted-foreground">{labels.empty}</p>
+				<EmptyDescription>{labels.empty}</EmptyDescription>
 			)}
 			<ItemGroup>
 				{(passkeys.data ?? []).map((passkey) => (
@@ -108,20 +111,29 @@ export function PasskeyManager({ removePasskey, labels }: PasskeyManagerProps): 
 								className="flex w-full flex-col gap-2"
 								onSubmit={(event): void => {
 									event.preventDefault();
+									setRenameFailure(null);
 									updatePasskey
 										.mutateAsync({ id: passkey.id, name: editing.name.trim() })
 										.then(() => setEditing(null))
-										.catch(() => setFailure(labels.failed));
+										.catch(() => setRenameFailure(labels.failed));
 								}}
 							>
-								<Input
-									aria-label={labels.name}
-									value={editing.name}
-									onChange={(event): void =>
-										setEditing({ id: passkey.id, name: event.target.value })
-									}
-									autoFocus
-								/>
+								<Field data-invalid={renameFailure === null ? undefined : true}>
+									<FieldLabel htmlFor={`passkey-name-${passkey.id}`}>{labels.name}</FieldLabel>
+									<Input
+										id={`passkey-name-${passkey.id}`}
+										value={editing.name}
+										aria-invalid={renameFailure === null ? undefined : true}
+										aria-describedby={
+											renameFailure === null ? undefined : `passkey-error-${passkey.id}`
+										}
+										onChange={(event): void =>
+											setEditing({ id: passkey.id, name: event.target.value })
+										}
+										autoFocus
+									/>
+									<FieldError id={`passkey-error-${passkey.id}`}>{renameFailure}</FieldError>
+								</Field>
 								<ItemActions>
 									<Button type="submit" variant="outline" disabled={updatePasskey.isPending}>
 										{labels.save}
@@ -145,7 +157,10 @@ export function PasskeyManager({ removePasskey, labels }: PasskeyManagerProps): 
 										type="button"
 										variant="ghost"
 										size="sm"
-										onClick={(): void => setEditing({ id: passkey.id, name: passkey.name ?? '' })}
+										onClick={(): void => {
+											setRenameFailure(null);
+											setEditing({ id: passkey.id, name: passkey.name ?? '' });
+										}}
 									>
 										{labels.rename}
 									</Button>

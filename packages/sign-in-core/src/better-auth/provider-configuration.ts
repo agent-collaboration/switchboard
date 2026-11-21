@@ -24,6 +24,7 @@ import { personAccessTokenClaims } from '#sign-in-core/better-auth/person-access
 import type { ProviderRequestState } from '#sign-in-core/better-auth/provider-request-state';
 import { createSecondFactorProviderPlugin } from '#sign-in-core/better-auth/second-factor-provider-plugin';
 import { sessionReadWithoutToken } from '#sign-in-core/better-auth/session-read-without-token';
+import { createShellSessionPlugin } from '#sign-in-core/better-auth/shell-session-plugin';
 import { createSignInSignOutPlugin } from '#sign-in-core/better-auth/sign-in-sign-out';
 import {
 	agentRegistrationPorts,
@@ -86,6 +87,7 @@ type SignInProviderOptions = BetterAuthOptions & {
 		ReturnType<typeof createPasskeyConfirmationPlugin>,
 		ReturnType<typeof createOrganizationProvisioningPlugin>,
 		ReturnType<typeof createOrganizationStatementPlugin>,
+		ReturnType<typeof createShellSessionPlugin>,
 		ReturnType<typeof createSignInSignOutPlugin>,
 	];
 };
@@ -494,6 +496,7 @@ export function createSignInProvider(props: SignInProviderProps): SignInProvider
 				platform: props.platform,
 				store: props.store,
 			}),
+			createShellSessionPlugin(props.store.persons),
 			createSignInSignOutPlugin({
 				issuer: props.configuration.issuer,
 				sessions: props.store.persons,

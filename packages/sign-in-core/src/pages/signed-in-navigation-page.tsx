@@ -31,7 +31,12 @@ function SignedInNavigationFallback({
 					passkeys={
 						<PasskeyManagementCard
 							addAction={
-								<Button type="button" variant="outline" disabled>
+								<Button
+									type="button"
+									variant="outline"
+									disabled
+									className="disabled:pointer-events-auto"
+								>
 									Add passkey
 								</Button>
 							}

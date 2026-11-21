@@ -22,6 +22,7 @@ import {
 	createOrganizationFleetCallGuard,
 	createOrganizationFleetCallRunner,
 } from '#sign-in-core/better-auth/organization-fleet-call-guard';
+import { readNativeOrganizationSessionView } from '#sign-in-core/better-auth/organization-read-session';
 import { bootstrapOwnerClient } from '#sign-in-core/better-auth/owner-client-bootstrap';
 import { completePasskeySignIn } from '#sign-in-core/better-auth/passkey-sign-in-completion';
 import {
@@ -258,12 +259,16 @@ export function createSignInHttpHandler(
 				const account =
 					url.pathname === '/owner-ready'
 						? await readSignedInNavigationAccount({
-								provider: createSignInProvider({
-									...configuration,
-									requestState: state,
-									authority: { kind: 'public' },
-								}),
-								headers: request.headers,
+								session: readNativeOrganizationSessionView(
+									await createSignInProvider({
+										...configuration,
+										requestState: state,
+										authority: { kind: 'public' },
+									}).api.getSession({
+										headers: request.headers,
+										query: { disableCookieCache: true, disableRefresh: true },
+									}),
+								),
 								store: configuration.store,
 								clock: configuration.platform.clock,
 							})

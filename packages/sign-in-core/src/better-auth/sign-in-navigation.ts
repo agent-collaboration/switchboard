@@ -1,6 +1,5 @@
 import type { FactorPageState } from '#sign-in-core/better-auth/factor-enrollment-page';
 import { organizationChoiceAllows } from '#sign-in-core/better-auth/organization-permission-check';
-import { readNativeOrganizationSessionView } from '#sign-in-core/better-auth/organization-read-session';
 import type { SignInProvider } from '#sign-in-core/better-auth/provider-configuration';
 import { requireStoredValue } from '#sign-in-core/better-auth/store-result-adapters';
 import type { OrganizationChoice } from '#sign-in-core/contracts/organization-membership';
@@ -10,7 +9,10 @@ import {
 	type SignedInNavigationPath,
 } from '#sign-in-core/contracts/sign-in-navigation';
 import type { SignInPlatform } from '#sign-in-core/contracts/sign-in-platform';
-import { readPersonOrganizationContext } from '#sign-in-core/organizations/person-organization-context';
+import {
+	readPersonOrganizationContext,
+	type OrganizationSessionView,
+} from '#sign-in-core/organizations/person-organization-context';
 import { renderSignedInNavigationPage } from '#sign-in-core/pages/signed-in-navigation-page';
 import { decideRecentSecondFactor } from '#sign-in-core/second-factors/second-factor-step-up';
 import { personIdSchema, type SignInStore } from '#sign-in-core/storage/models/sign-in-store';
@@ -23,17 +25,11 @@ interface SignedInNavigationAccount {
 }
 
 export async function readSignedInNavigationAccount(props: {
-	readonly provider: SignInProvider;
-	readonly headers: Headers;
+	readonly session: OrganizationSessionView;
 	readonly store: Pick<SignInStore, 'organizations' | 'factors'>;
 	readonly clock: SignInPlatform['clock'];
 }): Promise<SignedInNavigationAccount | null> {
-	const session = readNativeOrganizationSessionView(
-		await props.provider.api.getSession({
-			headers: props.headers,
-			query: { disableCookieCache: true, disableRefresh: true },
-		}),
-	);
+	const { session } = props;
 	if (session.kind === 'unavailable') throw new Error('Session unavailable');
 	if (session.kind === 'signed-out') return null;
 
@@ -98,7 +94,11 @@ export async function respondToSignedInNavigation(props: {
 			{ kind: 'refused' },
 			{ status: 403, headers: { 'cache-control': 'no-store' } },
 		);
-	const account = await readSignedInNavigationAccount({ ...props, clock: props.platform.clock });
+	const account = await readSignedInNavigationAccount({
+		session: await props.provider.api.readShellSession({ headers: props.headers }),
+		store: props.store,
+		clock: props.platform.clock,
+	});
 	if (account === null) return redirectToSignInStep('/sign-in');
 	const activeOrganization = signedInNavigationMembership(account, props.url);
 	if (activeOrganization === null) return redirectToSignInStep(`/owner-ready${props.url.search}`);
