@@ -2,7 +2,7 @@
 
 Node client for native S256 authorization through a loopback callback, followed by live owner-management commands. It requests short-lived management credentials; expiration requires another authorization.
 
-The delivered source entrypoint remains `scripts/verify-auth/owner-cli.ts`. From the monorepo root:
+The checkout entrypoint `scripts/verify-auth/owner-cli.ts` loads the built owner CLI. Build the workspace before invoking it from the monorepo root.
 
 ```sh
 mise exec node@24.7.0 -- pnpm exec tsx scripts/verify-auth/owner-cli.ts --help

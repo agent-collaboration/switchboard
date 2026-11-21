@@ -16,11 +16,7 @@ import {
 	controlledSignInIds,
 } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
 import { startLocalAuthHarness } from '#sign-in-test-support/test-fixtures/local-auth-harness';
-import { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
-import {
-	startHeadlessChrome,
-	type ChromeProtocol,
-} from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
 import { exerciseOrganizationChooser } from '#sign-in-test-support/test-fixtures/organization-browser-chooser';
 import {
 	closeOrganizationBrowserScenario,
@@ -31,12 +27,15 @@ import {
 	installOrganizationBrowserCookie,
 	OrganizationBrowserResponses,
 } from '#sign-in-test-support/test-fixtures/organization-browser-transport';
+import {
+	launchProofBrowser,
+	type PlaywrightBrowserPage,
+} from '#sign-in-test-support/test-fixtures/playwright-browser';
 
-const empty = z.object({}).passthrough();
 export interface OrganizationBrowserScenario {
 	readonly harness: Awaited<ReturnType<typeof startLocalAuthHarness>>;
-	readonly protocol: ChromeProtocol;
-	readonly page: NativeBrowserPage;
+	readonly page: PlaywrightBrowserPage;
+	readonly scenarioSignal: AbortSignal;
 	readonly responses: OrganizationBrowserResponses;
 	readonly root: string;
 	readonly firstOrganizationId: string;
@@ -51,26 +50,31 @@ export interface OrganizationBrowserScenario {
 }
 
 /** Lasting V2/V6 product journey. The host lane prepares the native artifacts. */
-export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Promise<void> {
+export async function observeOrganizationBrowser(
+	kind: 'chooser' | 'people',
+	host: 'node' | 'cloudflare',
+	scenarioSignal: AbortSignal,
+): Promise<void> {
 	const root = fileURLToPath(new URL('../../../../', import.meta.url));
 	const sourceRevision = (
 		await promisify(execFile)('git', ['rev-parse', 'HEAD'], { cwd: root })
 	).stdout.trim();
-	const host = process.env.SIGN_IN_TEST_HOST ?? 'cloudflare';
 	const evidence = await mkdtemp(
 		path.join(tmpdir(), `2026-11-organization-browser-${host}-${kind}-`),
 	);
 	process.stdout.write(
 		`${JSON.stringify({ event: 'organization-browser-evidence', host, kind, sourceRevision, evidence })}\n`,
 	);
-	const harness = await startLocalAuthHarness();
-	let chrome: Awaited<ReturnType<typeof startHeadlessChrome>> | undefined;
+	const harness = await startLocalAuthHarness({ host, turnstileSecret: 'published-test' });
+	let chrome: Awaited<ReturnType<typeof launchProofBrowser>> | undefined;
 	let responses: OrganizationBrowserResponses | undefined;
 	const screenshots: string[] = [];
 	const requestedPaths: string[] = [];
 	let status: 'passed' | 'failed' = 'failed';
 	let scenarioFailure: OrganizationBrowserFailure = { kind: 'none' };
 	try {
+		if (harness.signInHost !== host)
+			throw new Error(`Requested ${host} browser scenario resolved ${harness.signInHost}`);
 		const initial = organizationPersonTokenClaimsSchema.parse(
 			decodeJwt(await harness.ownerToken()),
 		);
@@ -93,29 +97,14 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 			fleetState: 'settingUp',
 			createdAt: new Date(controlledSignInClock.now()),
 		});
-		chrome = await startHeadlessChrome(evidence);
-		const protocol = chrome.page;
-		const page = new NativeBrowserPage(protocol, evidence);
-		await Promise.all(
-			['Page.enable', 'Runtime.enable', 'Network.enable'].map((method) =>
-				protocol.call(method, {}, empty),
-			),
-		);
-		await protocol.call(
-			'Emulation.setDeviceMetricsOverride',
-			{ width: 400, height: 844, deviceScaleFactor: 1, mobile: true },
-			empty,
-		);
-		await protocol.call(
-			'Emulation.setEmulatedMedia',
-			{ features: [{ name: 'prefers-color-scheme', value: 'dark' }] },
-			empty,
-		);
-		const version = await chrome.browser.call(
-			'Browser.getVersion',
-			{},
-			z.object({ product: z.string(), revision: z.string() }).passthrough(),
-		);
+		chrome = await launchProofBrowser({
+			evidence,
+			origin: harness.issuer,
+			colorScheme: 'dark',
+			scenarioSignal,
+		});
+		const page = chrome;
+		const version = await page.protocol.send('Browser.getVersion');
 		await writeFile(
 			path.join(evidence, 'target.json'),
 			JSON.stringify(
@@ -132,22 +121,21 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 			),
 			{ mode: 0o600 },
 		);
-		protocol.on('Network.requestWillBeSent', (value): void => {
-			const request = z.object({ request: z.object({ url: z.string() }) }).parse(value);
-			const url = new URL(request.request.url);
+		page.page.on('request', (request): void => {
+			const url = new URL(request.url());
 			if (url.origin === harness.issuer) requestedPaths.push(url.pathname);
 		});
-		responses = new OrganizationBrowserResponses(protocol);
-		await responses.enable();
+		responses = new OrganizationBrowserResponses(page);
+		await responses.enable(harness.issuer);
 		await installOrganizationBrowserCookie({
-			protocol,
+			page,
 			issuer: harness.issuer,
 			cookie: harness.cookie(),
 		});
 		const context: OrganizationBrowserScenario = {
 			harness,
-			protocol,
 			page,
+			scenarioSignal,
 			responses,
 			root,
 			firstOrganizationId: first.id,
@@ -159,12 +147,7 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 			ownerPersonId: initial.sub,
 			requestedPaths,
 			async capture(name: string): Promise<void> {
-				const shot = await protocol.call(
-					'Page.captureScreenshot',
-					{ format: 'png', captureBeyondViewport: false },
-					z.object({ data: z.string() }),
-				);
-				await writeFile(path.join(evidence, `${name}.png`), Buffer.from(shot.data, 'base64'), {
+				await writeFile(path.join(evidence, `${name}.png`), await page.captureFailureFrame(), {
 					mode: 0o600,
 				});
 				screenshots.push(`${name}.png`);
@@ -203,6 +186,7 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 							host,
 							kind,
 							status,
+							actualHarnessHost: harness.signInHost,
 							screenshots,
 							requestedPaths,
 							standIns: [
@@ -221,15 +205,28 @@ export async function observeOrganizationBrowser(kind: 'chooser' | 'people'): Pr
 				);
 			},
 			close: async (): Promise<void> => {
-				try {
-					await responses?.close();
-				} finally {
-					try {
-						await chrome?.close();
-					} finally {
-						await harness.close();
-					}
-				}
+				await withNativeBrowserCleanup(
+					async (): Promise<void> => {
+						await responses?.close();
+					},
+					() =>
+						withNativeBrowserCleanup(
+							async (): Promise<void> => {
+								await chrome?.close();
+							},
+							() => harness.close(),
+						),
+				);
+				const cleanup = {
+					sourceRevision,
+					host: harness.signInHost,
+					kind,
+					browserConnectedAfterClose: chrome?.isBrowserConnected() ?? null,
+					harnessTeardown: harness.teardownObservations.map((entry) => entry.kind),
+				};
+				await writeFile(path.join(evidence, 'cleanup.json'), JSON.stringify(cleanup), {
+					mode: 0o600,
+				});
 			},
 		});
 	}

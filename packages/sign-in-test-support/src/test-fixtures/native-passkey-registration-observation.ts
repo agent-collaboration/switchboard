@@ -1,12 +1,10 @@
+import type { Response } from 'playwright';
 import { z } from 'zod';
 
 import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
-import type {
-	NativeBrowserPage,
-	nativeNetworkResponseSchema,
-} from '#sign-in-test-support/test-fixtures/native-browser-page';
 import type { NativeAwaitObserver } from '#sign-in-test-support/test-fixtures/native-browser-progress';
-import type { ChromeProtocol } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import type { PlaywrightBrowserPage } from '#sign-in-test-support/test-fixtures/playwright-browser';
+import type { BrowserNetworkResponse } from '#sign-in-test-support/test-fixtures/playwright-network';
 
 export const nativePasskeyRegistrationReady =
 	"!!document.querySelector('#security-heading') && [...document.querySelectorAll('[data-sign-in-island][data-sign-in-island-mounted]')].some(root=>{try{return JSON.parse(root.dataset.islandState||'null')?.kind==='passkey-management'&&[...root.querySelectorAll('button')].some(button=>button.textContent.trim()==='Add passkey'&&!button.disabled);}catch{return false;}})";
@@ -55,7 +53,7 @@ export interface NativePasskeyRegistrationRecord {
 
 export interface NativePasskeyRegistrationObservation {
 	readonly install: (
-		page: Pick<NativeBrowserPage, 'evaluate'>,
+		page: Pick<PlaywrightBrowserPage, 'evaluate'>,
 		observe: NativeAwaitObserver,
 	) => Promise<void>;
 	readonly finish: () => Promise<void>;
@@ -98,9 +96,17 @@ globalThis.__nativePasskeyRegistrationObservation={ready:()=>state().ready};
 emit({kind:'installed'});changed();return true;
 })()`;
 
+export interface NativePasskeyRegistrationTransport {
+	readonly addBinding: () => Promise<void>;
+	readonly subscribe: (
+		event: 'Runtime.bindingCalled' | 'Network.requestWillBeSent' | 'Network.responseReceived',
+		listener: (value: unknown) => void,
+	) => () => void;
+}
+
 /** One owner serializes a private trace; finishing cannot await an uncompleted browser operation. */
 export function createNativePasskeyRegistrationObservation(props: {
-	readonly protocol: Pick<ChromeProtocol, 'call' | 'on'>;
+	readonly transport: NativePasskeyRegistrationTransport;
 	readonly issuer: string;
 	readonly write: (record: NativePasskeyRegistrationRecord) => Promise<void>;
 }): NativePasskeyRegistrationObservation {
@@ -135,7 +141,7 @@ export function createNativePasskeyRegistrationObservation(props: {
 		}
 	}
 	const subscriptions = [
-		props.protocol.on('Runtime.bindingCalled', (value): void => {
+		props.transport.subscribe('Runtime.bindingCalled', (value): void => {
 			const binding = z.object({ name: z.string(), payload: z.string() }).safeParse(value);
 			if (!binding.success || binding.data.name !== nativePasskeyRegistrationBinding) return;
 			try {
@@ -146,12 +152,12 @@ export function createNativePasskeyRegistrationObservation(props: {
 				if (failure.kind === 'none') failure = { kind: 'failed', error };
 			}
 		}),
-		props.protocol.on('Network.requestWillBeSent', (value): void => {
+		props.transport.subscribe('Network.requestWillBeSent', (value): void => {
 			const request = z.object({ request: z.object({ url: z.string() }) }).safeParse(value);
 			if (request.success && isOptions(request.data.request.url))
 				record({ kind: 'options-requested' });
 		}),
-		props.protocol.on('Network.responseReceived', (value): void => {
+		props.transport.subscribe('Network.responseReceived', (value): void => {
 			const response = z
 				.object({ response: z.object({ url: z.string(), status: z.number().int() }) })
 				.safeParse(value);
@@ -163,13 +169,7 @@ export function createNativePasskeyRegistrationObservation(props: {
 	return {
 		install: async (page, observe): Promise<void> => {
 			await drain();
-			await observe('registration: observation binding', () =>
-				props.protocol.call(
-					'Runtime.addBinding',
-					{ name: nativePasskeyRegistrationBinding },
-					z.object({}).passthrough(),
-				),
-			);
+			await observe('registration: observation binding', () => props.transport.addBinding());
 			await observe('registration: observation installation', () =>
 				page.evaluate(nativePasskeyRegistrationScript, z.literal(true)),
 			);
@@ -183,15 +183,34 @@ export function createNativePasskeyRegistrationObservation(props: {
 	};
 }
 
-/** Wait for committed island controls, then resolve the control again through native input. */
+const committedPasskeyList =
+	"[...document.querySelectorAll('[data-sign-in-island][data-sign-in-island-mounted]')].some(root=>{try{const state=JSON.parse(root.dataset.islandState||'null');return state?.kind==='passkey-management'&&(root.querySelector('ul > li')!==null||[...root.querySelectorAll('p')].some(paragraph=>paragraph.textContent?.trim()==='No passkeys yet.'));}catch{return false;}})";
+
+/** Wait for the delivered list render before measuring the control that follows it. */
 export async function registerNativePasskey(props: {
-	readonly page: NativeBrowserPage;
+	readonly page: PlaywrightBrowserPage;
+	readonly initialListResponse: Promise<Response>;
 	readonly observeAwait: NativeAwaitObserver;
 	readonly observeCleanup: NativeAwaitObserver;
-}): Promise<z.infer<typeof nativeNetworkResponseSchema>> {
+}): Promise<BrowserNetworkResponse> {
 	const { page, observeAwait, observeCleanup } = props;
+	page.recordAwait('registration: initial list response');
+	const listResponse = await observeAwait(
+		'registration: initial list response',
+		() => props.initialListResponse,
+	);
+	if (listResponse.status() !== 200) throw new Error('Initial passkey list request failed');
+	page.recordAwait('registration: initial list response body completion');
+	const responseFailure = await observeAwait(
+		'registration: initial list response body completion',
+		() => listResponse.finished(),
+	);
+	if (responseFailure !== null) throw responseFailure;
+	await page.readyWhen(committedPasskeyList, 'registration: committed initial list render', () =>
+		page.recordPasskeyListCommit(),
+	);
 	await observeAwait('registration: mounted island control readiness', () =>
-		page.readyWhen(nativePasskeyRegistrationReady),
+		page.readyWhen(nativePasskeyRegistrationReady, 'registration: mounted Add passkey control'),
 	);
 	const registrationError = page.evaluate(
 		`new Promise((resolve,reject)=>{const root=[...document.querySelectorAll('[data-sign-in-island]')].find(node=>JSON.parse(node.dataset.islandState).kind==='passkey-management');if(!root)throw new Error('Passkey management root missing');const inspect=()=>{const error=root.querySelector('[role="alert"]');if(error?.textContent?.trim())resolve(error.textContent.trim());};const observer=new MutationObserver(inspect);observer.observe(root,{childList:true,subtree:true,characterData:true});window.cancelPasskeyRegistrationObservation=()=>{observer.disconnect();reject(new Error('Registration observation cancelled'));};inspect();})`,

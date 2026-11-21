@@ -1,254 +1,157 @@
 import { z } from 'zod';
 
-import type { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
-import type {
-	ChromeProtocol,
-	NetworkTerminalMethod,
-} from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import { withNativeBrowserCleanup } from '#sign-in-test-support/test-fixtures/native-browser-cleanup';
+import type { PlaywrightBrowserPage } from '#sign-in-test-support/test-fixtures/playwright-browser';
 
-const empty = z.object({}).passthrough();
-const pausedRequestSchema = z.object({
-	requestId: z.string(),
-	networkId: z.string().optional(),
-	request: z.object({ url: z.url(), postData: z.string().optional() }),
-});
-const failedPauseSchema = pausedRequestSchema.extend({
-	responseErrorReason: z.enum([
-		'Failed',
-		'Aborted',
-		'TimedOut',
-		'AccessDenied',
-		'ConnectionClosed',
-		'ConnectionReset',
-		'ConnectionRefused',
-		'ConnectionAborted',
-		'ConnectionFailed',
-		'NameNotResolved',
-		'InternetDisconnected',
-		'AddressUnreachable',
-		'BlockedByClient',
-		'BlockedByResponse',
-	]),
-	responseStatusCode: z.number().optional(),
-});
-const responsePauseSchema = pausedRequestSchema.extend({
-	responseStatusCode: z.number(),
-	responseErrorReason: z.never().optional(),
-});
-const responseStagePauseSchema = z.union([failedPauseSchema, responsePauseSchema]);
-// A held successful response still needs the real Network identity for delivery proof.
-const pausedSchema = responsePauseSchema.extend({ networkId: z.string() });
+interface HeldOrganizationResponse {
+	readonly requestId: string;
+	readonly networkId: string;
+	readonly responseStatusCode: number;
+	readonly request: { readonly url: string; readonly postData?: string };
+}
 
-/** Holds only completed server responses; no fake reply stands in for the application. */
+// Use the generated Playwright event type at the CDP boundary.
+type PausedResponse = {
+	readonly requestId: string;
+	readonly networkId?: string;
+	readonly responseStatusCode?: number;
+	readonly responseErrorReason?: string;
+	readonly request: HeldOrganizationResponse['request'];
+};
+
+/** Pauses live endpoint replies after the server has executed them. */
 export class OrganizationBrowserResponses {
-	private readonly holds: {
+	private readonly pending: {
 		readonly matches: (url: URL) => boolean;
-		readonly reached: ReturnType<typeof Promise.withResolvers<z.infer<typeof pausedSchema>>>;
+		readonly reached: ReturnType<typeof Promise.withResolvers<HeldOrganizationResponse>>;
 	}[] = [];
-	private readonly navigationObservers = new Set<() => void>();
-	private failure: unknown;
-	private readonly unsubscribe: () => void;
-	constructor(private readonly protocol: ChromeProtocol) {
-		this.unsubscribe = protocol.on('Fetch.requestPaused', (value): void => {
-			const parsed = responseStagePauseSchema.safeParse(value);
-			if (!parsed.success) {
-				this.failure = parsed.error;
-				throw parsed.error;
-			}
-			const paused = parsed.data;
-			const url = new URL(paused.request.url);
-			const index = this.holds.findIndex((hold) => hold.matches(url));
-			const hold = index < 0 ? undefined : this.holds.splice(index, 1)[0];
-			if (paused.responseErrorReason !== undefined) {
-				const http = url.protocol === 'http:' || url.protocol === 'https:';
-				process.stdout.write(
-					`${JSON.stringify({ event: 'organization-browser-paused-failure', origin: http ? url.origin : 'non-http', pathname: http ? url.pathname : '<omitted>', reason: paused.responseErrorReason, matchedHold: hold !== undefined })}\n`,
-				);
-				hold?.reached.reject(new Error('Held response failed: ' + paused.responseErrorReason));
-				this.continuePausedRequest(paused.requestId);
-				return;
-			}
-			if (hold === undefined) {
-				this.continuePausedRequest(paused.requestId);
-				return;
-			}
-			const correlated = pausedSchema.safeParse(paused);
-			if (!correlated.success) {
-				hold.reached.reject(new Error('Held response is missing its Network request identity'));
-				this.continuePausedRequest(paused.requestId);
-				return;
-			}
-			hold.reached.resolve(correlated.data);
+	private readonly continuationWork: Promise<void>[] = [];
+
+	constructor(private readonly page: PlaywrightBrowserPage) {}
+
+	private readonly onPaused = (reply: PausedResponse): void => {
+		const index = this.pending.findIndex((hold) => hold.matches(new URL(reply.request.url)));
+		const hold = index < 0 ? undefined : this.pending.splice(index, 1)[0];
+		if (
+			hold !== undefined &&
+			reply.responseStatusCode !== undefined &&
+			reply.networkId !== undefined &&
+			reply.responseErrorReason === undefined
+		) {
+			hold.reached.resolve({
+				requestId: reply.requestId,
+				networkId: reply.networkId,
+				responseStatusCode: reply.responseStatusCode,
+				request: reply.request,
+			});
+			return;
+		}
+		hold?.reached.reject(new Error('Held response failed or lacks a Network request identity'));
+		const work = this.page.protocol
+			.send('Fetch.continueRequest', { requestId: reply.requestId })
+			.then((): void => {});
+		void work.catch(() => undefined);
+		this.continuationWork.push(work);
+	};
+
+	async enable(origin: string): Promise<void> {
+		this.page.protocol.on('Fetch.requestPaused', this.onPaused);
+		this.page.signal.addEventListener('abort', this.cancelPending, { once: true });
+		await this.page.protocol.send('Fetch.enable', {
+			patterns: [
+				'/api/auth/organization/set-active',
+				'/api/auth/organization/person-membership',
+				'/api/auth/organization/people',
+			].map((pathname) => ({
+				urlPattern: `${origin}${pathname}*`,
+				requestStage: 'Response' as const,
+			})),
 		});
 	}
-	private continuePausedRequest(requestId: string): void {
-		void this.protocol
-			.call('Fetch.continueRequest', { requestId }, empty)
-			.catch((error: unknown): void => {
-				this.failure = error;
-			});
-	}
-	async enable(): Promise<void> {
-		await this.protocol.call(
-			'Fetch.enable',
-			{
-				patterns: [{ urlPattern: '*/*', requestStage: 'Response' }],
-			},
-			empty,
-		);
-	}
-	arm(matches: (url: URL) => boolean): Promise<z.infer<typeof pausedSchema>> {
-		const reached = Promise.withResolvers<z.infer<typeof pausedSchema>>();
+
+	private readonly cancelPending = (): void => {
+		for (const hold of this.pending.splice(0))
+			hold.reached.reject(
+				this.page.signal.reason ?? new Error('Organization response observation ended'),
+			);
+	};
+
+	arm(matches: (url: URL) => boolean): Promise<HeldOrganizationResponse> {
+		this.page.signal.throwIfAborted();
+		const reached = Promise.withResolvers<HeldOrganizationResponse>();
 		void reached.promise.catch(() => undefined);
-		this.holds.push({ matches, reached });
+		this.pending.push({ matches, reached });
 		return reached.promise;
 	}
-	async release(response: z.infer<typeof pausedSchema>): Promise<void> {
-		const terminal = await this.continueResponse(response);
-		if (terminal !== 'Network.loadingFinished')
-			throw new Error('Held data response failed before successful delivery');
-	}
-	/** Native status and navigation are asserted by the caller; body completion is diagnostic only. */
-	async releaseForNavigation(response: z.infer<typeof pausedSchema>): Promise<void> {
-		const terminal = this.protocol.waitForNetworkTerminal(response.networkId);
-		let observing = true;
-		const stop = (): void => {
-			if (!observing) return;
-			observing = false;
-			unsubscribeNavigation();
-			terminal.cancel();
-			this.navigationObservers.delete(stop);
-		};
-		const unsubscribeNavigation = this.protocol.on('Page.frameNavigated', (value): void => {
-			const parsed = z
-				.object({ frame: z.object({ parentId: z.string().optional() }) })
-				.safeParse(value);
-			if (!parsed.success || parsed.data.frame.parentId !== undefined) return;
-			process.stdout.write(
-				`${JSON.stringify({ event: 'organization-browser-navigation-response', kind: 'none-before-navigation' })}\n`,
-			);
-			unsubscribeNavigation();
-		});
-		this.navigationObservers.add(stop);
-		void terminal.completed.then(
-			(kind): void => {
-				if (observing)
-					process.stdout.write(
-						`${JSON.stringify({ event: 'organization-browser-navigation-response', kind: kind === 'Network.loadingFinished' ? 'finished' : 'failed' })}\n`,
-					);
-				stop();
-			},
-			(): void => stop(),
-		);
+
+	async release(response: HeldOrganizationResponse): Promise<void> {
+		const terminal = this.page.network.waitForNetworkTerminal(response.networkId);
 		try {
-			await this.protocol.call('Fetch.continueRequest', { requestId: response.requestId }, empty);
-		} catch (error) {
-			stop();
-			throw error;
-		}
-	}
-	private async continueResponse(
-		response: z.infer<typeof pausedSchema>,
-	): Promise<NetworkTerminalMethod> {
-		const terminal = this.protocol.waitForNetworkTerminal(response.networkId);
-		void terminal.completed.catch(() => undefined);
-		try {
-			await this.protocol.call('Fetch.continueRequest', { requestId: response.requestId }, empty);
+			await this.releaseForNavigation(response);
 			const kind = await terminal.completed;
 			process.stdout.write(
 				`${JSON.stringify({ event: 'organization-browser-response-terminal', kind })}\n`,
 			);
-			return kind;
+			if (kind !== 'Network.loadingFinished')
+				throw new Error('Held data response failed before successful delivery');
 		} finally {
 			terminal.cancel();
 		}
 	}
-	async lose(response: z.infer<typeof pausedSchema>): Promise<void> {
-		await this.protocol.call(
-			'Fetch.failRequest',
-			{
-				requestId: response.requestId,
-				errorReason: 'ConnectionClosed',
-			},
-			empty,
-		);
+
+	/** A navigation can discard the outgoing document before the reply body completes. */
+	async releaseForNavigation(response: HeldOrganizationResponse): Promise<void> {
+		await this.page.protocol.send('Fetch.continueRequest', { requestId: response.requestId });
 	}
+
+	async lose(response: HeldOrganizationResponse): Promise<void> {
+		await this.page.protocol.send('Fetch.failRequest', {
+			requestId: response.requestId,
+			errorReason: 'ConnectionClosed',
+		});
+	}
+
 	async close(): Promise<void> {
-		for (const stop of this.navigationObservers) stop();
-		await this.protocol.call('Fetch.disable', {}, empty);
-		this.unsubscribe();
-		if (this.failure !== undefined) throw this.failure;
+		this.page.signal.removeEventListener('abort', this.cancelPending);
+		this.cancelPending();
+		this.page.protocol.off('Fetch.requestPaused', this.onPaused);
+		if (!this.page.page.isClosed()) await this.page.protocol.send('Fetch.disable');
+		if (!this.page.signal.aborted) await Promise.all(this.continuationWork);
 	}
 }
 
-/** A DOM change is the completion signal; there is no clock or retry interval. */
-export async function organizationDomReady(
-	page: NativeBrowserPage,
+export function organizationDomReady(
+	page: PlaywrightBrowserPage,
 	predicate: string,
 ): Promise<void> {
-	await page.evaluate(
-		`new Promise(resolve=>{const inspect=()=>{if(${predicate}){observer.disconnect();resolve(true);}};const observer=new MutationObserver(inspect);observer.observe(document,{subtree:true,childList:true,attributes:true,characterData:true});inspect();})`,
-		z.literal(true),
-	);
+	return page.readyWhen(predicate);
 }
 
 export async function organizationBrowserCookie(
-	protocol: ChromeProtocol,
+	page: PlaywrightBrowserPage,
 	issuer: string,
 ): Promise<string> {
-	const result = await protocol.call(
-		'Network.getCookies',
-		{ urls: [issuer] },
-		z.object({
-			cookies: z.array(z.object({ name: z.string(), value: z.string() })),
-		}),
-	);
-	return result.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+	return (await page.context.cookies(issuer))
+		.map(({ name, value }) => `${name}=${value}`)
+		.join('; ');
 }
 
 export async function installOrganizationBrowserCookie(props: {
-	readonly protocol: ChromeProtocol;
+	readonly page: PlaywrightBrowserPage;
 	readonly issuer: string;
 	readonly cookie: string;
 }): Promise<void> {
-	await props.protocol.call('Network.clearBrowserCookies', {}, empty);
-	await Promise.all(
-		props.cookie.split('; ').map(async (pair: string): Promise<void> => {
+	await props.page.context.clearCookies();
+	await props.page.context.addCookies(
+		props.cookie.split('; ').map((pair) => {
 			const separator = pair.indexOf('=');
 			if (separator <= 0) throw new Error('Native session cookie is malformed');
-			// The cookie is produced by Better Auth; Chrome owns it from this point onward.
-			await props.protocol.call(
-				'Network.setCookie',
-				{
-					name: pair.slice(0, separator),
-					value: pair.slice(separator + 1),
-					url: props.issuer,
-				},
-				z.object({ success: z.literal(true) }),
-			);
+			return {
+				name: pair.slice(0, separator),
+				value: pair.slice(separator + 1),
+				url: props.issuer,
+			};
 		}),
-	);
-}
-
-export async function pressOrganizationBrowserKey(
-	protocol: ChromeProtocol,
-	key: string,
-): Promise<void> {
-	await protocol.call(
-		'Input.dispatchKeyEvent',
-		{
-			type: 'keyDown',
-			key,
-			code: key,
-			windowsVirtualKeyCode: key === 'Tab' ? 9 : 13,
-			...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}),
-		},
-		empty,
-	);
-	await protocol.call(
-		'Input.dispatchKeyEvent',
-		{ type: 'keyUp', key, code: key, windowsVirtualKeyCode: key === 'Tab' ? 9 : 13 },
-		empty,
 	);
 }
 
@@ -264,6 +167,7 @@ export const organizationEnterGestureSchema = z.strictObject({
 		organizationEnterTargetSchema.extend({
 			kind: z.enum(['keydown', 'keypress', 'click', 'submit', 'keyup']),
 			enterKey: z.boolean(),
+			trusted: z.boolean(),
 		}),
 	),
 	activeElement: organizationEnterTargetSchema,
@@ -271,7 +175,7 @@ export const organizationEnterGestureSchema = z.strictObject({
 
 /** Observe one real Enter gesture. The keyup event completes the observation, even without submit. */
 export async function observeOrganizationEnterGesture(props: {
-	readonly page: NativeBrowserPage;
+	readonly page: PlaywrightBrowserPage;
 	readonly buttonSelector: string;
 	readonly formSelector: string;
 	readonly pressEnter: () => Promise<void>;
@@ -287,7 +191,7 @@ const record=(event)=>{
 if(event instanceof KeyboardEvent&&event.key!=='Enter')return;
 const target=targetOf(event.target);
 if(event instanceof SubmitEvent)target.expectedButton=event.submitter===button;
-events.push({...target,kind:event.type,enterKey:event instanceof KeyboardEvent&&event.key==='Enter'});
+events.push({...target,kind:event.type,trusted:event.isTrusted,enterKey:event instanceof KeyboardEvent&&event.key==='Enter'});
 if(event.type==='keyup'&&event instanceof KeyboardEvent&&event.key==='Enter')finish({events:events.slice(),activeElement:targetOf(document.activeElement)});
 };
 const kinds=['keydown','keypress','click','submit','keyup'];for(const kind of kinds)document.addEventListener(kind,record,true);
@@ -296,23 +200,26 @@ return true;
 })()`,
 		z.literal(true),
 	);
-	try {
-		await props.pressEnter();
-		return await props.page.evaluate(
-			'window.organizationEnterGesture.completed',
-			organizationEnterGestureSchema,
-		);
-	} finally {
-		await props.page.evaluate(
-			'(()=>{window.organizationEnterGesture?.cleanup();delete window.organizationEnterGesture;return true;})()',
-			z.literal(true),
-		);
-	}
+	return withNativeBrowserCleanup(
+		async () => {
+			await props.pressEnter();
+			return props.page.evaluate(
+				'window.organizationEnterGesture.completed',
+				organizationEnterGestureSchema,
+			);
+		},
+		async (): Promise<void> => {
+			if (props.page.page.isClosed()) return;
+			await props.page.evaluate(
+				'(()=>{window.organizationEnterGesture?.cleanup();delete window.organizationEnterGesture;return true;})()',
+				z.literal(true),
+			);
+		},
+	);
 }
 
 export async function tabToOrganizationControl(props: {
-	readonly page: NativeBrowserPage;
-	readonly protocol: ChromeProtocol;
+	readonly page: PlaywrightBrowserPage;
 	readonly selector: string;
 	readonly label?: string;
 }): Promise<void> {
@@ -327,7 +234,7 @@ export async function tabToOrganizationControl(props: {
 			)
 		)
 			return;
-		await pressOrganizationBrowserKey(props.protocol, 'Tab');
+		await props.page.page.keyboard.press('Tab');
 		return advance(remaining - 1);
 	}
 	await advance(80);

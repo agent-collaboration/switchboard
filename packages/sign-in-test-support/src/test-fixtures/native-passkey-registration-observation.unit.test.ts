@@ -4,9 +4,7 @@ import { expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { createIsolatedPageDom } from '#sign-in-test-support/test-fixtures/isolated-page-dom';
-import type { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import { executeNativeAwait } from '#sign-in-test-support/test-fixtures/native-browser-progress';
-import type { ChromeProtocol } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
 import {
 	createNativePasskeyRegistrationObservation,
 	nativePasskeyRegistrationBinding,
@@ -15,6 +13,7 @@ import {
 	nativePasskeyRegistrationScript,
 	type NativePasskeyRegistrationRecord,
 } from '#sign-in-test-support/test-fixtures/native-passkey-registration-observation';
+import type { PlaywrightBrowserPage } from '#sign-in-test-support/test-fixtures/playwright-browser';
 
 // The served fallback contract is factor-page.tsx's Add button inside IslandRoot.
 const fallbackMarkup = `<h1 id="security-heading">Security</h1><div id="status"></div><div data-sign-in-island data-island-state='{"kind":"passkey-management"}'><button id="add-passkey" type="button">Add passkey</button></div>`;
@@ -232,8 +231,8 @@ it('keeps native rejected and synchronously thrown errors unchanged and out of e
 });
 
 function protocolEvents(): {
-	readonly protocol: Pick<ChromeProtocol, 'call' | 'on'>;
-	readonly page: Pick<NativeBrowserPage, 'evaluate'>;
+	readonly transport: import('./native-passkey-registration-observation').NativePasskeyRegistrationTransport;
+	readonly page: Pick<PlaywrightBrowserPage, 'evaluate'>;
 	readonly emit: (method: string, value: unknown) => void;
 	readonly calls: string[];
 	readonly listeners: Map<string, Set<(value: unknown) => void>>;
@@ -247,8 +246,8 @@ function protocolEvents(): {
 		listeners,
 		calls,
 		emit,
-		protocol: {
-			on: (method, listener): (() => void) => {
+		transport: {
+			subscribe: (method, listener): (() => void) => {
 				const entries = listeners.get(method) ?? new Set();
 				entries.add(listener);
 				listeners.set(method, entries);
@@ -256,13 +255,9 @@ function protocolEvents(): {
 					entries.delete(listener);
 				};
 			},
-			call: <TValue>(
-				method: string,
-				_parameters: Readonly<Record<string, unknown>>,
-				schema: z.ZodType<TValue>,
-			): Promise<TValue> => {
-				calls.push(method);
-				return Promise.resolve(schema.parse({}));
+			addBinding: (): Promise<void> => {
+				calls.push('Runtime.addBinding');
+				return Promise.resolve();
 			},
 		},
 		page: {
@@ -281,7 +276,7 @@ it('records only the expected options origin/path and closes without accepting l
 	const transport = protocolEvents();
 	const records: NativePasskeyRegistrationRecord[] = [];
 	const observation = createNativePasskeyRegistrationObservation({
-		protocol: transport.protocol,
+		transport: transport.transport,
 		issuer: 'http://localhost',
 		write: async (record): Promise<void> => {
 			records.push(record);
@@ -330,7 +325,7 @@ it('accepts the actual browser program through the strict binding schema without
 		},
 	});
 	const observation = createNativePasskeyRegistrationObservation({
-		protocol: transport.protocol,
+		transport: transport.transport,
 		issuer: 'http://localhost',
 		write: async (record): Promise<void> => {
 			records.push(record);
@@ -381,7 +376,7 @@ it('serializes diagnostic writes before installation and retains write failure w
 	let activeWrites = 0;
 	const overlaps: number[] = [];
 	const observation = createNativePasskeyRegistrationObservation({
-		protocol: transport.protocol,
+		transport: transport.transport,
 		issuer: 'http://localhost',
 		write: async (): Promise<void> => {
 			activeWrites += 1;
@@ -403,7 +398,7 @@ it('serializes diagnostic writes before installation and retains write failure w
 
 	const failure = new Error('Private diagnostic write refused');
 	const failed = createNativePasskeyRegistrationObservation({
-		protocol: transport.protocol,
+		transport: transport.transport,
 		issuer: 'http://localhost',
 		write: async (): Promise<never> => {
 			throw failure;

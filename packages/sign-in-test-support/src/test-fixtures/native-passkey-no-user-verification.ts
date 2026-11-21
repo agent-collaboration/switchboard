@@ -1,15 +1,14 @@
 import { z } from 'zod';
 
-import type { NativeBrowserPage } from '#sign-in-test-support/test-fixtures/native-browser-page';
 import type { NativeAwaitObserver } from '#sign-in-test-support/test-fixtures/native-browser-progress';
-import type { ChromeProtocol } from '#sign-in-test-support/test-fixtures/native-browser-protocol';
+import type { PlaywrightBrowserPage } from '#sign-in-test-support/test-fixtures/playwright-browser';
 
-const empty = z.object({}).passthrough();
+const mountedErrorToast =
+	'[data-sonner-toast][data-type="error"][data-visible="true"][data-mounted="true"][data-removed="false"]';
 
 /** The native refusal retains the same challenge, response, notice and signed-out assertions. */
 export async function observeNativePasskeyNoUserVerification(props: {
-	readonly page: NativeBrowserPage;
-	readonly protocol: Pick<ChromeProtocol, 'call'>;
+	readonly page: PlaywrightBrowserPage;
 	readonly authenticatorId: string;
 	readonly issuer: string;
 	readonly activeStep: string;
@@ -24,7 +23,6 @@ export async function observeNativePasskeyNoUserVerification(props: {
 }): Promise<void> {
 	const {
 		page,
-		protocol,
 		authenticatorId,
 		issuer,
 		activeStep,
@@ -34,8 +32,11 @@ export async function observeNativePasskeyNoUserVerification(props: {
 		observeAwait,
 	} = props;
 	await observeAwait('no-UV: sign-in page', () => signInPage(issuer + '/sign-in'));
+	await observeAwait('no-UV: no existing notice before the attempt', () =>
+		page.evaluate("document.querySelector('[data-sonner-toast]')===null", z.literal(true)),
+	);
 	await observeAwait('no-UV: set bad-UV response bit', () =>
-		protocol.call('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: true }, empty),
+		page.protocol.send('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: true }),
 	);
 	const refusal = await observeAwait('no-UV: challenge and verification response', () =>
 		page.responseTo('/api/auth/passkey/verify-authentication', () =>
@@ -47,11 +48,31 @@ export async function observeNativePasskeyNoUserVerification(props: {
 	z.object({ code: z.literal('USER_VERIFICATION_REQUIRED') }).parse(
 		await observeAwait('no-UV: verification body', () => page.readBody(refusal)),
 	);
-	await observeAwait('no-UV: notice and enabled button readiness', () =>
+	await observeAwait('no-UV: mounted notice and enabled button readiness', () =>
 		page.readyWhen(
-			"location.pathname==='/sign-in' && !!document.querySelector('[data-sonner-toast]') && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Continue with Passkey'&&!button.disabled)",
+			`location.pathname==='/sign-in' && !!document.querySelector(${JSON.stringify(mountedErrorToast)}) && [...document.querySelectorAll('button')].some(button=>button.textContent.trim()==='Continue with Passkey'&&!button.disabled)`,
 		),
 	);
+	await observeAwait('no-UV: visible refusal message', async (): Promise<void> => {
+		page.recordAwait('no-UV: refusal title after toast entry');
+		const notice = page.page
+			.locator(`${mountedErrorToast} [data-title]`)
+			.filter({ hasText: /^user-verification-required$/u });
+		if ((await notice.count()) !== 1)
+			throw new Error('No-UV refusal title was missing or ambiguous');
+		const visible = await notice.evaluate(
+			async (title) => {
+				const toast = title.closest('[data-sonner-toast]');
+				if (toast === null) return false;
+				// Sonner's mounted state starts the toast's entry transitions.
+				await Promise.all(toast.getAnimations().map((animation) => animation.finished));
+				return title.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+			},
+			undefined,
+			{ timeout: 0 },
+		);
+		if (!visible) throw new Error('No-UV refusal title was not visible');
+	});
 	await observeAwait('no-UV: signed-out session fetch and JSON', () =>
 		page.evaluate(
 			"fetch('/api/auth/get-session').then(response=>response.json()).then(session=>{if(session!==null)throw new Error('No-UV session exists');return true;})",
@@ -59,7 +80,7 @@ export async function observeNativePasskeyNoUserVerification(props: {
 		),
 	);
 	await observeAwait('no-UV: reset bad-UV response bit', () =>
-		protocol.call('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: false }, empty),
+		page.protocol.send('WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUV: false }),
 	);
 	await observeAwait('no-UV: passed evidence and normal screenshot', () =>
 		passed(

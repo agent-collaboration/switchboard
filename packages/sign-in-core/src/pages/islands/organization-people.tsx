@@ -105,6 +105,40 @@ function LoadingRows(): React.ReactElement {
 	);
 }
 
+interface PeopleReplyDecision {
+	readonly operation: 'lookup' | 'list';
+	readonly generation: number;
+	readonly outcome: 'applied' | 'discarded-as-stale';
+}
+
+/** Publish every decision after the render commits, even if React batches two replies. */
+function useCommittedPeopleReplyDecisions(): (decision: PeopleReplyDecision) => void {
+	const pending = React.useRef<
+		{ readonly sequence: number; readonly decision: PeopleReplyDecision }[]
+	>([]);
+	const nextSequence = React.useRef(0);
+	const [committedThrough, renderDecision] = React.useState(0);
+	React.useEffect(() => {
+		const firstUncommitted = pending.current.findIndex(
+			({ sequence }) => sequence > committedThrough,
+		);
+		const committedCount = firstUncommitted === -1 ? pending.current.length : firstUncommitted;
+		for (const { decision } of pending.current.splice(0, committedCount)) {
+			if (typeof performance.mark !== 'function') continue;
+			const name = `organization-people:${decision.operation}-handled`;
+			performance.clearMarks(name);
+			performance.mark(name, {
+				detail: { generation: decision.generation, outcome: decision.outcome },
+			});
+		}
+	}, [committedThrough]);
+	return React.useCallback((decision: PeopleReplyDecision): void => {
+		const sequence = ++nextSequence.current;
+		pending.current.push({ sequence, decision });
+		renderDecision(sequence);
+	}, []);
+}
+
 /** Read-only table structure follows Better Auth UI's people tables at 2b028ec5;
  * independently composed with Switchboard's shared shadcn components. */
 function OrganizationPeopleContent(props: {
@@ -132,20 +166,47 @@ function OrganizationPeopleContent(props: {
 	const listReference = React.useRef<ListState>(list);
 	const lookupReference = React.useRef<LookupState>(lookup);
 	const [email, setEmail] = React.useState('');
-	const applyList = React.useCallback((event: ListEvent): ListState | null => {
-		const result = listLifecycle.transition(listReference.current, event, {});
-		if (result.kind === 'refused') return null;
-		listReference.current = result.state;
-		renderList(result.state);
-		return result.state;
-	}, []);
-	const applyLookup = React.useCallback((event: LookupEvent): LookupState | null => {
-		const result = lookupLifecycle.transition(lookupReference.current, event, {});
-		if (result.kind === 'refused') return null;
-		lookupReference.current = result.state;
-		renderLookup(result.state);
-		return result.state;
-	}, []);
+	const recordDecision = useCommittedPeopleReplyDecisions();
+	const applyList = React.useCallback(
+		(event: ListEvent): ListState | null => {
+			const result = listLifecycle.transition(listReference.current, event, {});
+			if (result.kind === 'refused') {
+				if (event.kind === 'reply' && result.reason === 'stale')
+					recordDecision({
+						operation: 'list',
+						generation: event.generation,
+						outcome: 'discarded-as-stale',
+					});
+				return null;
+			}
+			listReference.current = result.state;
+			renderList(result.state);
+			if (event.kind === 'reply')
+				recordDecision({ operation: 'list', generation: event.generation, outcome: 'applied' });
+			return result.state;
+		},
+		[recordDecision],
+	);
+	const applyLookup = React.useCallback(
+		(event: LookupEvent): LookupState | null => {
+			const result = lookupLifecycle.transition(lookupReference.current, event, {});
+			if (result.kind === 'refused') {
+				if (event.kind === 'reply' && result.reason === 'stale')
+					recordDecision({
+						operation: 'lookup',
+						generation: event.generation,
+						outcome: 'discarded-as-stale',
+					});
+				return null;
+			}
+			lookupReference.current = result.state;
+			renderLookup(result.state);
+			if (event.kind === 'reply')
+				recordDecision({ operation: 'lookup', generation: event.generation, outcome: 'applied' });
+			return result.state;
+		},
+		[recordDecision],
+	);
 	const readList = React.useCallback(
 		async (pending: ListState): Promise<void> => {
 			if (pending.kind !== 'pending') return;

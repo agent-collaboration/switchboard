@@ -1,0 +1,117 @@
+[
+	{
+		"source": "09-v4-v5-skip-first-check.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/better-auth/organization-membership-read-plugin.ts",
+				"find": "\t\t\t\t? { status: 503, body: { kind: 'unavailable' } }\n\t\t\t\t: { status: check.status, body: { kind: 'refused' } };\n\t\t}\n\t\tconst first = await checkReadPermission(context, request.value.organizationId);\n\t\tif (first.kind !== 'allowed') return refused(first);\n\t\tapply({ kind: 'first-check-passed' });\n\t\ttry {\n\t\t\tswitch (request.kind) {\n",
+				"replace": "\t\t\t\t? { status: 503, body: { kind: 'unavailable' } }\n\t\t\t\t: { status: check.status, body: { kind: 'refused' } };\n\t\t}\n\t\tapply({ kind: 'first-check-passed' });\n\t\ttry {\n\t\t\tswitch (request.kind) {\n"
+			}
+		]
+	},
+	{
+		"source": "10-v4-v5-skip-second-check.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/better-auth/organization-membership-read-plugin.ts",
+				"find": "\t\t} catch {\n\t\t\treturn refused({ kind: 'unavailable' });\n\t\t}\n\t\tconst second = await checkReadPermission(context, request.value.organizationId);\n\t\tif (second.kind !== 'allowed') return refused(second);\n\t\tapply({ kind: 'second-check-passed' });\n\t\t// Reading through a closure avoids a false control-flow narrowing across apply().\n\t\tconst finalState = (): CheckedReadState => state;\n",
+				"replace": "\t\t} catch {\n\t\t\treturn refused({ kind: 'unavailable' });\n\t\t}\n\t\tapply({ kind: 'second-check-passed' });\n\t\t// Reading through a closure avoids a false control-flow narrowing across apply().\n\t\tconst finalState = (): CheckedReadState => state;\n"
+			}
+		]
+	},
+	{
+		"source": "11-v4-v5-second-check-cached-session.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/better-auth/organization-membership-read-plugin.ts",
+				"find": "\tasync function checkReadPermission(\n\t\tcontext: GenericEndpointContext,\n\t\torganizationId: OrganizationId,\n\t): Promise<ReadPermission> {\n\t\tif (context.headers?.has('authorization')) return { kind: 'refused', status: 401 };\n\t\tconst acquired = readStoredOrganizationSession(context.context.session);\n\t\tif (acquired.kind === 'unavailable') return acquired;\n\t\tif (acquired.kind === 'signed-out') return { kind: 'refused', status: 401 };\n\t\ttry {\n\t\t\tconst live = await props.store.persons.readPersonSession(\n\t\t\t\tacquired.value.user.id,\n\t\t\t\tacquired.value.session.id,\n\t\t\t);\n\t\t\tif (live.kind === 'store-unavailable') return { kind: 'unavailable' };\n\t\t\tif (live.value === null) return { kind: 'refused', status: 401 };\n\t\t\tif (live.value.session.activeOrganizationId !== organizationId)\n",
+				"replace": "\tasync function checkReadPermission(\n\t\tcontext: GenericEndpointContext,\n\t\torganizationId: OrganizationId,\n\t\tuseStoredSession: boolean = true,\n\t): Promise<ReadPermission> {\n\t\tif (context.headers?.has('authorization')) return { kind: 'refused', status: 401 };\n\t\tconst acquired = readStoredOrganizationSession(context.context.session);\n\t\tif (acquired.kind === 'unavailable') return acquired;\n\t\tif (acquired.kind === 'signed-out') return { kind: 'refused', status: 401 };\n\t\ttry {\n\t\t\tconst live = useStoredSession\n\t\t\t\t? await props.store.persons.readPersonSession(acquired.value.user.id, acquired.value.session.id)\n\t\t\t\t: { kind: 'available' as const, value: acquired.value };\n\t\t\tif (live.kind === 'store-unavailable') return { kind: 'unavailable' };\n\t\t\tif (live.value === null) return { kind: 'refused', status: 401 };\n\t\t\tif (live.value.session.activeOrganizationId !== organizationId)\n"
+			},
+			{
+				"file": "packages/sign-in-core/src/better-auth/organization-membership-read-plugin.ts",
+				"find": "\t\t} catch {\n\t\t\treturn refused({ kind: 'unavailable' });\n\t\t}\n\t\tconst second = await checkReadPermission(context, request.value.organizationId);\n\t\tif (second.kind !== 'allowed') return refused(second);\n\t\tapply({ kind: 'second-check-passed' });\n\t\t// Reading through a closure avoids a false control-flow narrowing across apply().\n",
+				"replace": "\t\t} catch {\n\t\t\treturn refused({ kind: 'unavailable' });\n\t\t}\n\t\tconst second = await checkReadPermission(context, request.value.organizationId, false);\n\t\tif (second.kind !== 'allowed') return refused(second);\n\t\tapply({ kind: 'second-check-passed' });\n\t\t// Reading through a closure avoids a false control-flow narrowing across apply().\n"
+			}
+		]
+	},
+	{
+		"source": "12-v4-facts-error-becomes-not-member.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/better-auth/organization-membership-read-plugin.ts",
+				"find": "\t\t\tswitch (request.kind) {\n\t\t\t\tcase 'lookup': {\n\t\t\t\t\tconst facts = await props.store.organizations.readPersonMembershipFacts(request.value);\n\t\t\t\t\tif (facts.kind === 'store-unavailable') return refused({ kind: 'unavailable' });\n\t\t\t\t\tapply({ kind: 'facts-read', facts: { kind: 'lookup', value: facts.value } });\n\t\t\t\t\tbreak;\n\t\t\t\t}\n",
+				"replace": "\t\t\tswitch (request.kind) {\n\t\t\t\tcase 'lookup': {\n\t\t\t\t\tconst facts = await props.store.organizations.readPersonMembershipFacts(request.value);\n\t\t\t\t\tif (facts.kind === 'store-unavailable') {\n\t\t\t\t\t\tapply({ kind: 'facts-read', facts: { kind: 'lookup', value: { kind: 'invitations', rows: [] } } });\n\t\t\t\t\t\tbreak;\n\t\t\t\t\t}\n\t\t\t\t\tapply({ kind: 'facts-read', facts: { kind: 'lookup', value: facts.value } });\n\t\t\t\t\tbreak;\n\t\t\t\t}\n"
+			}
+		]
+	},
+	{
+		"source": "13-v5-member-page-without-org.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/storage/organization-membership-store.ts",
+				"find": "\t\t\t\t\t\t.select({ name: user.name, email: user.email, role: member.role })\n\t\t\t\t\t\t.from(member)\n\t\t\t\t\t\t.innerJoin(user, eq(member.userId, user.id))\n\t\t\t\t\t\t.where(eq(member.organizationId, request.organizationId))\n\t\t\t\t\t\t.orderBy(asc(member.createdAt), asc(member.id))\n\t\t\t\t\t\t.limit(PEOPLE_PAGE_SIZE)\n\t\t\t\t\t\t.offset(request.offset),\n",
+				"replace": "\t\t\t\t\t\t.select({ name: user.name, email: user.email, role: member.role })\n\t\t\t\t\t\t.from(member)\n\t\t\t\t\t\t.innerJoin(user, eq(member.userId, user.id))\n\t\t\t\t\t\t.orderBy(asc(member.createdAt), asc(member.id))\n\t\t\t\t\t\t.limit(PEOPLE_PAGE_SIZE)\n\t\t\t\t\t\t.offset(request.offset),\n"
+			}
+		]
+	},
+	{
+		"source": "14-v5-list-sql-pending-only.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/storage/organization-membership-store.ts",
+				"find": "\t\t\t\t\t.where(\n\t\t\t\t\t\tand(\n\t\t\t\t\t\t\teq(invitation.organizationId, request.organizationId),\n\t\t\t\t\t\t\tnotExists(\n\t\t\t\t\t\t\t\tdatabase\n\t\t\t\t\t\t\t\t\t.select({ id: member.id })\n",
+				"replace": "\t\t\t\t\t.where(\n\t\t\t\t\t\tand(\n\t\t\t\t\t\t\teq(invitation.organizationId, request.organizationId),\n\t\t\t\t\t\t\teq(invitation.status, 'pending'),\n\t\t\t\t\t\t\tnotExists(\n\t\t\t\t\t\t\t\tdatabase\n\t\t\t\t\t\t\t\t\t.select({ id: member.id })\n"
+			}
+		]
+	},
+	{
+		"source": "15-v5-native-member-object-released.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/storage/organization-membership-store.ts",
+				"find": "import { and, asc, count, eq, notExists } from 'drizzle-orm';\nimport { z } from 'zod';\n\nimport {\n",
+				"replace": "import { and, asc, count, eq, getTableColumns, notExists } from 'drizzle-orm';\nimport { z } from 'zod';\n\nimport {\n"
+			},
+			{
+				"file": "packages/sign-in-core/src/storage/organization-membership-store.ts",
+				"find": "\t\t\tconst members = await readStoreValue(\n\t\t\t\tasync () =>\n\t\t\t\t\topenDatabase()\n\t\t\t\t\t\t.select({ name: user.name, email: user.email, role: member.role })\n\t\t\t\t\t\t.from(member)\n\t\t\t\t\t\t.innerJoin(user, eq(member.userId, user.id))\n\t\t\t\t\t\t.where(eq(member.organizationId, request.organizationId))\n",
+				"replace": "\t\t\tconst members = await readStoreValue(\n\t\t\t\tasync () =>\n\t\t\t\t\topenDatabase()\n\t\t\t\t\t\t.select({ name: user.name, email: user.email, ...getTableColumns(member), image: user.image })\n\t\t\t\t\t\t.from(member)\n\t\t\t\t\t\t.innerJoin(user, eq(member.userId, user.id))\n\t\t\t\t\t\t.where(eq(member.organizationId, request.organizationId))\n"
+			},
+			{
+				"file": "packages/sign-in-core/src/contracts/organization-membership.ts",
+				"find": "\toffset: z.coerce.number().int().nonnegative().multipleOf(PEOPLE_PAGE_SIZE),\n});\nexport type OrganizationPeopleListRequest = z.infer<typeof organizationPeopleListRequestSchema>;\nexport const organizationPeopleMemberSchema = z.strictObject({\n\tname: z.string(),\n\temail: z.email(),\n\trole: organizationMembershipSchema.shape.role,\n",
+				"replace": "\toffset: z.coerce.number().int().nonnegative().multipleOf(PEOPLE_PAGE_SIZE),\n});\nexport type OrganizationPeopleListRequest = z.infer<typeof organizationPeopleListRequestSchema>;\nexport const organizationPeopleMemberSchema = z.looseObject({\n\tname: z.string(),\n\temail: z.email(),\n\trole: organizationMembershipSchema.shape.role,\n"
+			}
+		]
+	},
+	{
+		"source": "16-v5-open-native-list-members.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/response-release/sign-in-request-handler.ts",
+				"find": "\t\t\t[\n\t\t\t\t'/api/auth/organization/self-context',\n\t\t\t\t'/api/auth/organization/people-list',\n\t\t\t\t'/api/auth/organization/people',\n\t\t\t].includes(pathname)\n\t\t)\n",
+				"replace": "\t\t\t[\n\t\t\t\t'/api/auth/organization/self-context',\n\t\t\t\t'/api/auth/organization/people-list',\n\t\t\t\t'/api/auth/organization/list-members',\n\t\t\t\t'/api/auth/organization/people',\n\t\t\t].includes(pathname)\n\t\t)\n"
+			}
+		]
+	},
+	{
+		"source": "B04-stamp-confirmation-on-switch.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/better-auth/provider-configuration.ts",
+				"find": "\t\t\t\t},\n\t\t\t),\n\t\t\tafter: createAuthMiddleware(async (context) => {\n\t\t\t\tconst candidate = context.context.newSession ?? context.context.session;\n\t\t\t\tif (\n\t\t\t\t\tcontext.path !== '/sign-out' &&\n",
+				"replace": "\t\t\t\t},\n\t\t\t),\n\t\t\tafter: createAuthMiddleware(async (context) => {\n\t\t\t\tconst actor = props.requestState.organizationActor;\n\t\t\t\tif (context.path === '/organization/set-active' && actor.kind === 'authenticated') {\n\t\t\t\t\trequireStoredValue(await props.store.factors.stampSession({\n\t\t\t\t\t\tpersonId: actor.personId, sessionId: actor.sessionId, method: 'app',\n\t\t\t\t\t}));\n\t\t\t\t}\n\t\t\t\tconst candidate = context.context.newSession ?? context.context.session;\n\t\t\t\tif (\n\t\t\t\t\tcontext.path !== '/sign-out' &&\n"
+			}
+		]
+	},
+	{
+		"source": "B2-b1b-f1-omit-catch-audit.patch",
+		"edits": [
+			{
+				"file": "packages/sign-in-core/src/better-auth/sign-in-http-handler.ts",
+				"find": "\t\t\t\tstate.createdUserIds.map((personId) => persons.cleanupUnboundPerson(personId)),\n\t\t\t);\n\t\t\tif (passkeyAuditPending)\n\t\t\t\t// A release rejection skips completion. Attempt its failed record after cleanup;\n\t\t\t\t// either an unavailable store result or a rejection still leaves the same 503.\n\t\t\t\tawait Promise.allSettled([\n\t\t\t\t\tconfiguration.store.bootstrap.recordSignIn({\n\t\t\t\t\t\tactor: 'anonymous',\n\t\t\t\t\t\toutcome: 'failed',\n\t\t\t\t\t\tmethod: 'passkey',\n\t\t\t\t\t}),\n\t\t\t\t]);\n\t\t\treturn organizationReadResponse(\n\t\t\t\tincomingRequest,\n\t\t\t\tResponse.json(\n\t\t\t\t\t{ error: 'sign-in-unavailable' },\n\t\t\t\t\t{ status: 503, headers: { 'cache-control': 'no-store' } },\n",
+				"replace": "\t\t\t\tstate.createdUserIds.map((personId) => persons.cleanupUnboundPerson(personId)),\n\t\t\t);\n\t\t\tif (passkeyAuditPending)\n\t\t\t\t// A release rejection skips completion. Attempt its failed record after cleanup;\n\t\t\t\t// either an unavailable store result or a rejection still leaves the same 503.\n\t\t\t\tawait Promise.allSettled([]);\n\t\t\treturn organizationReadResponse(\n\t\t\t\tincomingRequest,\n\t\t\t\tResponse.json(\n\t\t\t\t\t{ error: 'sign-in-unavailable' },\n\t\t\t\t\t{ status: 503, headers: { 'cache-control': 'no-store' } },\n"
+			}
+		]
+	}
+]

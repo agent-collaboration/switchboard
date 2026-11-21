@@ -11,7 +11,6 @@ import { z } from 'zod';
 
 import { runAuthProofProcess } from '#sign-in-test-support/test-fixtures/auth-proof-process';
 import {
-	authJourneySchema,
 	authJourneyFiles,
 	authJourneyExecutionPattern,
 	journeyReadinessEvents,
@@ -20,12 +19,11 @@ import {
 	selectAuthObservations,
 	requireMatchingAuthObservations,
 	revisionFenceSupportingUnitFiles,
-	type AuthJourney,
 	type OfferedAuthTest,
 } from '#sign-in-test-support/test-fixtures/auth-verification-journeys';
 import { runSupportingAuthUnitProof } from '#sign-in-test-support/test-fixtures/auth-verification-unit-proof';
 import { controlledSignInClock } from '#sign-in-test-support/test-fixtures/controlled-sign-in-clock';
-import { workspaceConfigurations } from '#sign-in-test-support/test-fixtures/local-auth-harness';
+import { workspaceConfigurations } from '#sign-in-test-support/test-fixtures/local-auth-configuration';
 import { nodeInvocationReceiptSchema } from '#sign-in-test-support/test-fixtures/node-management-bridge-contracts';
 import {
 	compareNodeProofReceipts,
@@ -48,6 +46,9 @@ import {
 	type ProofBundleManifest,
 } from '#sign-in-test-support/test-fixtures/proof-bundle-artifacts';
 import { turnstileTestSiteKey } from '#sign-in-test-support/test-fixtures/turnstile-test-keys';
+
+const retainedAuthJourney = z.enum(['organization', 'revision-fence']);
+type RetainedAuthJourney = z.infer<typeof retainedAuthJourney>;
 
 const verificationTargetFields = {
 	sourceRevision: z.string().regex(/^[a-f0-9]{40}$/u),
@@ -124,7 +125,7 @@ interface RequestLimitSummary {
 }
 
 function requireAdmittedRequestLimits(props: {
-	readonly journey: AuthJourney;
+	readonly journey: RetainedAuthJourney;
 	readonly signInHost: 'workerd' | 'node';
 	readonly requestLimits: readonly AuthHarnessRequestLimits[];
 }): RequestLimitSummary {
@@ -152,6 +153,28 @@ function requireAdmittedRequestLimits(props: {
 	};
 }
 
+type RetainedAuthSelections = Readonly<Record<RetainedAuthJourney, readonly OfferedAuthTest[]>>;
+
+export function selectRetainedAuthObservations(
+	inventory: readonly OfferedAuthTest[],
+	root: string,
+): RetainedAuthSelections {
+	return {
+		organization: selectAuthObservations({
+			inventory,
+			selectedFiles: authJourneyFiles('organization'),
+			journey: 'organization',
+			root,
+		}),
+		'revision-fence': selectAuthObservations({
+			inventory,
+			selectedFiles: authJourneyFiles('revision-fence'),
+			journey: 'revision-fence',
+			root,
+		}),
+	};
+}
+
 interface PreparedAuthVerification {
 	readonly root: string;
 	readonly evidence: string;
@@ -163,6 +186,7 @@ interface PreparedAuthVerification {
 	readonly manifestFile: string;
 	readonly vitest: string;
 	readonly inventory: readonly OfferedAuthTest[];
+	readonly selections: RetainedAuthSelections;
 	readonly supportingUnits: readonly OfferedAuthTest[];
 	readonly tuple: Readonly<Record<string, unknown>>;
 	readonly checkFrozenSource: () => Promise<void>;
@@ -274,6 +298,7 @@ export async function prepareAuthVerification(
 	const supportingUnits = z
 		.array(z.object({ name: z.string(), file: z.string(), projectName: z.literal('unit') }))
 		.parse(JSON.parse(await readFile(unitInventoryFile, 'utf8')));
+	const selections = selectRetainedAuthObservations(inventory, root);
 	const tuple = {
 		organizationStorageModules,
 		supportingUnits,
@@ -283,38 +308,7 @@ export async function prepareAuthVerification(
 		configuration: artifacts.configurationSource,
 		client: artifacts.clientSource,
 		inventory,
-		selections: {
-			'revision-fence': selectAuthObservations({
-				inventory,
-				selectedFiles: authJourneyFiles('revision-fence'),
-				journey: 'revision-fence',
-				root,
-			}),
-			organization: selectAuthObservations({
-				inventory,
-				selectedFiles: authJourneyFiles('organization'),
-				journey: 'organization',
-				root,
-			}),
-			agent: selectAuthObservations({
-				inventory,
-				selectedFiles: authJourneyFiles('agent'),
-				journey: 'agent',
-				root,
-			}),
-			bootstrap: selectAuthObservations({
-				inventory,
-				selectedFiles: authJourneyFiles('bootstrap'),
-				journey: 'bootstrap',
-				root,
-			}),
-			people: selectAuthObservations({
-				inventory,
-				selectedFiles: authJourneyFiles('people'),
-				journey: 'people',
-				root,
-			}),
-		},
+		selections,
 		hostSpecificExclusions: node.kind === 'node' ? workerdOnlyCallerCases : [],
 		executionHost: hostname(),
 		node: process.version,
@@ -335,6 +329,7 @@ export async function prepareAuthVerification(
 		manifestFile,
 		vitest,
 		inventory,
+		selections,
 		supportingUnits,
 		tuple,
 		checkFrozenSource,
@@ -344,7 +339,7 @@ export async function prepareAuthVerification(
 /** Execute another selected journey against the exact same prepared artifact/configuration declaration. */
 export async function runPreparedAuthVerification(
 	prepared: PreparedAuthVerification,
-	journey: AuthJourney,
+	journey: RetainedAuthJourney,
 ): Promise<number> {
 	const {
 		root,
@@ -365,12 +360,7 @@ export async function runPreparedAuthVerification(
 	if (process.version !== 'v24.7.0' || hostname() !== target.executionHost)
 		throw new Error('Prepared execution host/toolchain changed');
 	const selectedFiles = authJourneyFiles(journey);
-	const selected = selectAuthObservations({
-		inventory,
-		selectedFiles,
-		journey,
-		root,
-	});
+	const selected = prepared.selections[journey];
 	const reportPath = path.join(evidence, journey + '-vitest.json');
 	let supportingUnitPassed = 0;
 	let observedStorageModules: readonly Readonly<Record<string, string>>[] = [];
@@ -688,7 +678,7 @@ export async function runPreparedAuthVerification(
 	return 0;
 }
 
-/** S1 owns the local T3 agent/bootstrap journeys; B1 adds the people journey. Hosted journeys are added only with their later delivery grants. */
+/** Run one retained B2 journey against the declared local target. */
 export async function runAuthVerification(args: readonly string[]): Promise<number> {
 	const { values, positionals } = parseArgs({
 		args: [...args],
@@ -696,8 +686,7 @@ export async function runAuthVerification(args: readonly string[]): Promise<numb
 		options: { help: { type: 'boolean' }, 'target-file': { type: 'string' } },
 	});
 	if (values.help === true) {
-		process.stdout
-			.write(`Usage: mise exec -- pnpm exec tsx scripts/verify-auth/verify-auth.ts agent|bootstrap|people|organization|revision-fence --target-file FILE
+		process.stdout.write(`Usage: pnpm verify:sign-in organization|revision-fence --target-file FILE
 Runs the permanent real-workerd/D1/Better-Auth/Gateway host journey, with direct D1/DO and upstream-effect assertions.
 Organization selects native stamp/renewal and organization-provisioning cases; retains private request bytes and organization/public-key readbacks. Central answers are a recording stand-in, not central CAS/key-retention proof.
 Revision-fence selects native fences, person-fleet token release, revision drain/ACK, fleet-call recovery and both storage legs; supporting units isolate snapshot/session/native bounds; Node excludes the workerd deploy-backfill and no-scheduled-handler cases. Node startup backfill/no-interval wiring is separate integration proof.
@@ -710,7 +699,7 @@ Evidence is retained in an owned OS-temp directory. Unselected journeys are repo
 	}
 	let evidenceDirectory: string | undefined;
 	try {
-		const journey = authJourneySchema.parse(positionals[0]);
+		const journey = retainedAuthJourney.parse(positionals[0]);
 		if (positionals.length !== 1) throw new Error('Expected exactly one verification journey');
 		const prepared = await prepareAuthVerification(
 			z.string().min(1).parse(values['target-file']),
